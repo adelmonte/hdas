@@ -122,6 +122,13 @@ ignored_processes = [
     "bash", "zsh", "fish",     # shells
 ]
 
+# Packages to skip entirely (noisy apps like browsers)
+ignored_packages = []
+
+# How deep to track under monitored dirs
+# 1 = just parent dir (e.g., ~/.cache/mozilla instead of ~/.cache/mozilla/firefox/cache2/...)
+tracking_depth = 1
+
 # Auto-remove deleted files from DB on queries
 auto_prune = true
 ```
