@@ -2,6 +2,8 @@
 
 Track which packages create files in your home directory (`~/.cache`, `~/.local`, `~/.config`) using eBPF. Find and clean up orphaned files left behind by uninstalled packages.
 
+![screenshot](demo.png)
+
 ## The Problem
 
 Linux applications scatter files across your home directory in `.cache`, `.local`, `.config`, and other dotfile directories. When you uninstall a package, these files often remain as cruft. Worse, the files and folders frequently don't match the package names, making manual cleanup tedious and error-prone.
