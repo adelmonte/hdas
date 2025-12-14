@@ -133,7 +133,18 @@ fn get_tracked_path(full_path: &str, home: &std::path::Path, monitored_dirs: &[S
                 return Some(format!("{}/{}", home_str, relative.trim_start_matches('.')));
             }
 
-            let tracked_parts: Vec<&str> = parts.iter().take(depth as usize).cloned().collect();
+            let effective_depth = if dir_name == "local" && !parts.is_empty() {
+                let subdir = parts[0];
+                if subdir == "share" || subdir == "state" || subdir == "lib" {
+                    depth + 1
+                } else {
+                    depth
+                }
+            } else {
+                depth
+            };
+
+            let tracked_parts: Vec<&str> = parts.iter().take(effective_depth as usize).cloned().collect();
             if tracked_parts.is_empty() {
                 return Some(format!("{}/.{}", home_str, dir_name));
             }
@@ -233,7 +244,10 @@ pub fn run_monitor() -> Result<()> {
 
             let is_ignored_proc = ignored_processes.contains(&pkg_info.process);
 
-            if db.path_exists(&tracked_path) {
+            let path_exists = db.path_exists(&tracked_path);
+            let has_known_creator = path_exists && db.path_has_known_creator(&tracked_path);
+
+            if path_exists && (is_ignored_proc || has_known_creator) {
                 return;
             }
 

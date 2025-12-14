@@ -303,6 +303,14 @@ impl Database {
             |_| Ok(true)
         ).unwrap_or(false)
     }
+
+    pub fn path_has_known_creator(&self, path: &str) -> bool {
+        self.conn.query_row(
+            "SELECT 1 FROM files WHERE path = ?1 AND created_by_package != 'unknown'",
+            [path],
+            |_| Ok(true)
+        ).unwrap_or(false)
+    }
 }
 
 #[derive(Debug)]

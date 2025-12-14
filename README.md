@@ -126,7 +126,9 @@ ignored_processes = [
 ignored_packages = []
 
 # How deep to track under monitored dirs
-# 1 = just parent dir (e.g., ~/.cache/mozilla instead of ~/.cache/mozilla/firefox/cache2/...)
+# 1 = app dir (e.g., ~/.cache/mozilla instead of ~/.cache/mozilla/firefox/cache2/...)
+# Note: ~/.local/share, ~/.local/state, and ~/.local/lib automatically add +1 depth
+# so with depth=1, you get ~/.local/share/appname instead of just ~/.local/share
 tracking_depth = 1
 
 # Auto-remove deleted files from DB on queries

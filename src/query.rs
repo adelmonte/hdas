@@ -99,12 +99,6 @@ pub fn query_package(package: &str) -> Result<()> {
 
 pub fn show_orphans() -> Result<()> {
     let db = crate::db::Database::new()?;
-
-    let pruned = maybe_prune(&db)?;
-    if pruned > 0 {
-        eprintln!("(auto-pruned {} deleted file(s))", pruned);
-    }
-
     let orphans = db.get_orphans()?;
 
     if orphans.is_empty() {
@@ -115,15 +109,23 @@ pub fn show_orphans() -> Result<()> {
     println!("Files from uninstalled packages:\n");
     for pkg in orphans {
         let records = db.query_package(&pkg)?;
-        let existing: Vec<_> = records
-            .into_iter()
-            .filter(|r| Path::new(&r.path).exists())
-            .collect();
+        if !records.is_empty() {
+            let existing_count = records.iter().filter(|r| Path::new(&r.path).exists()).count();
+            let deleted_count = records.len() - existing_count;
 
-        if !existing.is_empty() {
-            println!("{} ({} file(s)):", pkg, existing.len());
-            for record in existing {
-                println!("  {}", record.path);
+            print!("{} ({} file(s)", pkg, records.len());
+            if deleted_count > 0 {
+                print!(", {} already deleted", deleted_count);
+            }
+            println!("):");
+
+            for record in records {
+                let exists = Path::new(&record.path).exists();
+                if exists {
+                    println!("  {}", record.path);
+                } else {
+                    println!("  {} (deleted)", record.path);
+                }
             }
             println!();
         }

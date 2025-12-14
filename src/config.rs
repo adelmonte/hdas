@@ -175,7 +175,8 @@ ignored_processes = [
 # Packages to skip entirely (noisy apps like browsers)
 ignored_packages = []
 
-# How deep to track under monitored dirs (1 = just parent dir like ~/.cache/mozilla)
+# How deep to track under monitored dirs (1 = app dir like ~/.cache/mozilla)
+# Note: ~/.local/share, ~/.local/state, and ~/.local/lib automatically add +1 depth
 tracking_depth = 1
 
 auto_prune = true
