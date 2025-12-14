@@ -295,6 +295,14 @@ impl Database {
         )?;
         Ok(deleted)
     }
+
+    pub fn path_exists(&self, path: &str) -> bool {
+        self.conn.query_row(
+            "SELECT 1 FROM files WHERE path = ?1",
+            [path],
+            |_| Ok(true)
+        ).unwrap_or(false)
+    }
 }
 
 #[derive(Debug)]

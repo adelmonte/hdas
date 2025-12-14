@@ -11,6 +11,12 @@ pub struct Config {
     #[serde(default = "default_ignored_processes")]
     pub ignored_processes: Vec<String>,
 
+    #[serde(default = "default_ignored_packages")]
+    pub ignored_packages: Vec<String>,
+
+    #[serde(default = "default_tracking_depth")]
+    pub tracking_depth: u32,
+
     #[serde(default = "default_auto_prune")]
     pub auto_prune: bool,
 }
@@ -58,6 +64,14 @@ fn default_ignored_processes() -> Vec<String> {
     ]
 }
 
+fn default_ignored_packages() -> Vec<String> {
+    vec![]
+}
+
+fn default_tracking_depth() -> u32 {
+    1
+}
+
 fn default_auto_prune() -> bool {
     true
 }
@@ -67,6 +81,8 @@ impl Default for Config {
         Self {
             monitored_dirs: default_monitored_dirs(),
             ignored_processes: default_ignored_processes(),
+            ignored_packages: default_ignored_packages(),
+            tracking_depth: default_tracking_depth(),
             auto_prune: default_auto_prune(),
         }
     }
@@ -155,6 +171,12 @@ ignored_processes = [
     "ls", "find", "fd", "rg", "grep", "ag", "file", "stat", "wc", "du", "tree",
     "bash", "zsh", "fish",
 ]
+
+# Packages to skip entirely (noisy apps like browsers)
+ignored_packages = []
+
+# How deep to track under monitored dirs (1 = just parent dir like ~/.cache/mozilla)
+tracking_depth = 1
 
 auto_prune = true
 "#

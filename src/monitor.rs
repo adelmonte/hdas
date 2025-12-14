@@ -117,12 +117,40 @@ fn get_comm(pid: u32) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
+fn get_tracked_path(full_path: &str, home: &std::path::Path, monitored_dirs: &[String], depth: u32) -> Option<String> {
+    let home_str = home.to_string_lossy();
+    let relative = full_path.strip_prefix(home_str.as_ref())?.trim_start_matches('/');
+
+    for dir in monitored_dirs {
+        let dir_name = dir.trim_start_matches('.');
+        let prefix = format!(".{}/", dir_name);
+
+        if relative.starts_with(&prefix) {
+            let after_base = relative.strip_prefix(&prefix)?;
+            let parts: Vec<&str> = after_base.split('/').collect();
+
+            if depth == 0 {
+                return Some(format!("{}/{}", home_str, relative.trim_start_matches('.')));
+            }
+
+            let tracked_parts: Vec<&str> = parts.iter().take(depth as usize).cloned().collect();
+            if tracked_parts.is_empty() {
+                return Some(format!("{}/.{}", home_str, dir_name));
+            }
+            return Some(format!("{}/.{}/{}", home_str, dir_name, tracked_parts.join("/")));
+        }
+    }
+    None
+}
+
 pub fn run_monitor() -> Result<()> {
     let config = crate::config::Config::load()?;
 
     println!("HDAS Monitor starting...");
     println!("Monitored directories: {:?}", config.monitored_dirs);
     println!("Ignored processes: {} configured", config.ignored_processes.len());
+    println!("Ignored packages: {} configured", config.ignored_packages.len());
+    println!("Tracking depth: {}", config.tracking_depth);
     println!("Process tree walking: enabled");
     println!();
 
@@ -143,8 +171,14 @@ pub fn run_monitor() -> Result<()> {
     println!();
 
     let monitored_dirs = config.monitored_dirs.clone();
+    let tracking_depth = config.tracking_depth;
     let ignored_processes: std::collections::HashSet<String> = config
         .ignored_processes
+        .iter()
+        .cloned()
+        .collect();
+    let ignored_packages: std::collections::HashSet<String> = config
+        .ignored_packages
         .iter()
         .cloned()
         .collect();
@@ -185,10 +219,25 @@ pub fn run_monitor() -> Result<()> {
                 p
             };
 
-            let pkg_info = get_package_for_pid_tree(event.pid, comm);
-            let is_ignored = ignored_processes.contains(&pkg_info.process);
+            let full_path_str = full_path.to_string_lossy();
+            let tracked_path = match get_tracked_path(&full_path_str, &home, &monitored_dirs, tracking_depth) {
+                Some(p) => p,
+                None => return,
+            };
 
-            let indicator = if is_ignored {
+            let pkg_info = get_package_for_pid_tree(event.pid, comm);
+
+            if ignored_packages.contains(&pkg_info.package) {
+                return;
+            }
+
+            let is_ignored_proc = ignored_processes.contains(&pkg_info.process);
+
+            if db.path_exists(&tracked_path) {
+                return;
+            }
+
+            let indicator = if is_ignored_proc {
                 "~"
             } else if pkg_info.via_parent {
                 "^"
@@ -197,10 +246,10 @@ pub fn run_monitor() -> Result<()> {
             };
 
             if let Err(e) = db.record_access(
-                full_path.to_str().unwrap(),
+                &tracked_path,
                 &pkg_info.package,
                 &pkg_info.process,
-                is_ignored
+                is_ignored_proc
             ) {
                 eprintln!("DB error: {}", e);
             }
@@ -216,7 +265,7 @@ pub fn run_monitor() -> Result<()> {
                 pkg_info.package,
                 comm,
                 via,
-                full_path.display()
+                tracked_path
             );
         })
         .build()?;
