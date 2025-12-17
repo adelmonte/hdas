@@ -7,3 +7,6 @@ pkg/
 src/
 *.tar.gz
 *.log
+
+# AUR repos are separate
+Releases/
