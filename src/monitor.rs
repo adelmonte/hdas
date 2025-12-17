@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::fs;
 use std::mem::MaybeUninit;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use libbpf_rs::skel::{SkelBuilder, OpenSkel};
 use libbpf_rs::OpenObject;
@@ -10,6 +11,8 @@ mod monitor_skel {
 }
 
 use monitor_skel::*;
+
+type PackageCache = RefCell<HashMap<String, Option<String>>>;
 
 fn get_ppid(pid: u32) -> Option<u32> {
     let stat_path = format!("/proc/{}/stat", pid);
@@ -28,19 +31,27 @@ fn get_exe_path(pid: u32) -> Option<String> {
     })
 }
 
-fn query_pacman(binary_path: &str) -> Option<String> {
-    let output = std::process::Command::new("pacman")
+fn query_pacman_cached(binary_path: &str, cache: &PackageCache) -> Option<String> {
+    if let Some(cached) = cache.borrow().get(binary_path) {
+        return cached.clone();
+    }
+
+    let result = std::process::Command::new("pacman")
         .arg("-Qo")
         .arg(binary_path)
         .output()
-        .ok()?;
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                text.split_whitespace().nth(4).map(|s| s.to_string())
+            } else {
+                None
+            }
+        });
 
-    if output.status.success() {
-        let text = String::from_utf8_lossy(&output.stdout);
-        text.split_whitespace().nth(4).map(|s| s.to_string())
-    } else {
-        None
-    }
+    cache.borrow_mut().insert(binary_path.to_string(), result.clone());
+    result
 }
 
 #[derive(Clone)]
@@ -50,14 +61,13 @@ pub struct PackageInfo {
     pub via_parent: bool,
 }
 
-pub fn get_package_for_pid_tree(pid: u32, comm: &str) -> PackageInfo {
-    let mut visited: HashMap<u32, Option<String>> = HashMap::new();
+fn get_package_for_pid_tree(pid: u32, comm: &str, cache: &PackageCache) -> PackageInfo {
     let mut current_pid = pid;
     let mut depth = 0;
     const MAX_DEPTH: u32 = 10;
 
     if let Some(exe) = get_exe_path(pid) {
-        if let Some(pkg) = query_pacman(&exe) {
+        if let Some(pkg) = query_pacman_cached(&exe, cache) {
             return PackageInfo {
                 package: pkg,
                 process: comm.to_string(),
@@ -72,23 +82,8 @@ pub fn get_package_for_pid_tree(pid: u32, comm: &str) -> PackageInfo {
             _ => break,
         };
 
-        if let Some(cached) = visited.get(&ppid) {
-            if let Some(pkg) = cached {
-                let parent_comm = get_comm(ppid).unwrap_or_else(|| "unknown".to_string());
-                return PackageInfo {
-                    package: pkg.clone(),
-                    process: parent_comm,
-                    via_parent: true,
-                };
-            }
-            current_pid = ppid;
-            depth += 1;
-            continue;
-        }
-
         if let Some(exe) = get_exe_path(ppid) {
-            if let Some(pkg) = query_pacman(&exe) {
-                visited.insert(ppid, Some(pkg.clone()));
+            if let Some(pkg) = query_pacman_cached(&exe, cache) {
                 let parent_comm = get_comm(ppid).unwrap_or_else(|| "unknown".to_string());
                 return PackageInfo {
                     package: pkg,
@@ -98,7 +93,6 @@ pub fn get_package_for_pid_tree(pid: u32, comm: &str) -> PackageInfo {
             }
         }
 
-        visited.insert(ppid, None);
         current_pid = ppid;
         depth += 1;
     }
@@ -194,6 +188,8 @@ pub fn run_monitor() -> Result<()> {
         .cloned()
         .collect();
 
+    let package_cache: PackageCache = RefCell::new(HashMap::new());
+
     let perf = libbpf_rs::PerfBufferBuilder::new(&skel.maps.events)
         .sample_cb(move |_cpu, data: &[u8]| {
             if data.len() < std::mem::size_of::<Event>() {
@@ -236,7 +232,7 @@ pub fn run_monitor() -> Result<()> {
                 None => return,
             };
 
-            let pkg_info = get_package_for_pid_tree(event.pid, comm);
+            let pkg_info = get_package_for_pid_tree(event.pid, comm, &package_cache);
 
             if ignored_packages.contains(&pkg_info.package) {
                 return;

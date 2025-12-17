@@ -38,12 +38,30 @@ HDAS uses eBPF to monitor file operations in real-time, attributing each file to
 sudo pacman -S clang libbpf rust
 
 # Clone and build
-git clone https://github.com/youruser/hdas.git
+git clone https://github.com/adelmonte/hdas.git
 cd hdas
 cargo build --release
 
 # Optional: install to PATH
 sudo cp target/release/hdas /usr/local/bin/
+```
+
+### Running as a Service
+
+To run the monitor automatically at boot:
+
+```bash
+# Copy the service file
+sudo cp hdas@.service /etc/systemd/system/
+
+# Enable and start for your user (replace YOUR_USERNAME)
+sudo systemctl enable --now hdas@YOUR_USERNAME
+
+# Check status
+sudo systemctl status hdas@YOUR_USERNAME
+
+# View logs
+sudo journalctl -u hdas@YOUR_USERNAME -f
 ```
 
 ## Usage
@@ -153,6 +171,8 @@ When a file access event is received, HDAS needs to determine which package is r
 1. Reading `/proc/<pid>/exe` to get the process's executable path
 2. Querying `pacman -Qo <path>` to find which package owns that binary
 3. If found, attribute the file to that package
+
+Results are cached by binary path, so repeated file accesses from the same program only query pacman once.
 
 **Example:** Process `firefox` (PID 1234) opens `~/.cache/mozilla/cookies.sqlite`
 ```
@@ -306,6 +326,7 @@ hdas/
 ├── bpf/
 │   └── monitor.bpf.c  # eBPF kernel program
 ├── build.rs         # Compiles eBPF code at build time
+├── hdas@.service    # Systemd service template
 └── Cargo.toml
 ```
 

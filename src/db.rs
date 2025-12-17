@@ -1,34 +1,50 @@
 use anyhow::Result;
 use rusqlite::{Connection, params};
 use std::path::PathBuf;
+use std::os::unix::fs::chown;
 
 pub struct Database {
     conn: Connection,
 }
 
-pub fn get_user_home() -> PathBuf {
+pub fn get_user_info() -> (PathBuf, Option<u32>, Option<u32>) {
     if let Ok(sudo_user) = std::env::var("SUDO_USER") {
         if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {
             for line in passwd.lines() {
                 let fields: Vec<&str> = line.split(':').collect();
                 if fields.len() >= 6 && fields[0] == sudo_user {
-                    return PathBuf::from(fields[5]);
+                    let uid = fields[2].parse().ok();
+                    let gid = fields[3].parse().ok();
+                    return (PathBuf::from(fields[5]), uid, gid);
                 }
             }
         }
     }
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"))
+    (dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp")), None, None)
+}
+
+pub fn get_user_home() -> PathBuf {
+    get_user_info().0
 }
 
 impl Database {
     pub fn new() -> Result<Self> {
-        let mut db_path = get_user_home();
-        db_path.push(".local/share/hdas");
-        std::fs::create_dir_all(&db_path)?;
-        db_path.push("attributions.db");
+        let (home, uid, gid) = get_user_info();
+        let mut db_dir = home;
+        db_dir.push(".local/share/hdas");
+        std::fs::create_dir_all(&db_dir)?;
 
-        let conn = Connection::open(db_path)?;
+        if let (Some(uid), Some(gid)) = (uid, gid) {
+            let _ = chown(&db_dir, Some(uid), Some(gid));
+        }
+
+        let db_path = db_dir.join("attributions.db");
+        let conn = Connection::open(&db_path)?;
         Self::migrate(&conn)?;
+
+        if let (Some(uid), Some(gid)) = (uid, gid) {
+            let _ = chown(&db_path, Some(uid), Some(gid));
+        }
 
         Ok(Self { conn })
     }

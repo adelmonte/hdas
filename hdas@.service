@@ -1,0 +1,20 @@
+[Unit]
+Description=Home Directory Attribution System for %i
+Documentation=https://github.com/adelmonte/hdas
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/hdas monitor
+Environment="SUDO_USER=%i"
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/%i/.local/share/hdas
+
+[Install]
+WantedBy=multi-user.target
