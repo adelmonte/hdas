@@ -1,4 +1,9 @@
 /target/
-/pkg/
 *.pkg.tar.zst
 todo.txt
+
+# makepkg artifacts
+pkg/
+src/
+*.tar.gz
+*.log

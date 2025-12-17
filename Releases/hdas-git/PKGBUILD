@@ -1,5 +1,5 @@
 pkgname=hdas-git
-pkgver=1.0.0
+pkgver=1.0.0.r0.g22f96e5
 pkgrel=1
 pkgdesc="Track which packages create files in your home directory using eBPF"
 arch=('x86_64')
@@ -9,6 +9,7 @@ depends=('libbpf')
 makedepends=('rust' 'clang' 'git')
 provides=('hdas')
 conflicts=('hdas')
+options=(!lto)
 install=hdas.install
 source=("git+$url.git")
 sha256sums=('SKIP')
@@ -21,7 +22,7 @@ pkgver() {
 
 build() {
     cd hdas
-    cargo build --release --locked
+    cargo build --release
 }
 
 package() {

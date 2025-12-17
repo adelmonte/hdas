@@ -31,6 +31,16 @@ HDAS uses eBPF to monitor file operations in real-time, attributing each file to
 
 ## Installation
 
+### AUR (Arch Linux)
+
+```bash
+# Stable release
+yay -S hdas
+
+# Or latest git
+yay -S hdas-git
+```
+
 ### Building from source
 
 ```bash
@@ -42,8 +52,9 @@ git clone https://github.com/adelmonte/hdas.git
 cd hdas
 cargo build --release
 
-# Optional: install to PATH
-sudo cp target/release/hdas /usr/local/bin/
+# Install binary and service
+sudo install -Dm755 target/release/hdas /usr/bin/hdas
+sudo install -Dm644 hdas@.service /usr/lib/systemd/system/hdas@.service
 ```
 
 ### Running as a Service
