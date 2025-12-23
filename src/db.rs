@@ -27,16 +27,35 @@ pub fn get_user_home() -> PathBuf {
     get_user_info().0
 }
 
+pub fn create_dir_all_with_owner(path: &std::path::Path, uid: Option<u32>, gid: Option<u32>) -> Result<()> {
+    let mut to_create = Vec::new();
+    let mut current = path.to_path_buf();
+
+    while !current.exists() {
+        to_create.push(current.clone());
+        if let Some(parent) = current.parent() {
+            current = parent.to_path_buf();
+        } else {
+            break;
+        }
+    }
+
+    for dir in to_create.into_iter().rev() {
+        std::fs::create_dir(&dir)?;
+        if let (Some(u), Some(g)) = (uid, gid) {
+            let _ = chown(&dir, Some(u), Some(g));
+        }
+    }
+
+    Ok(())
+}
+
 impl Database {
     pub fn new() -> Result<Self> {
         let (home, uid, gid) = get_user_info();
         let mut db_dir = home;
         db_dir.push(".local/share/hdas");
-        std::fs::create_dir_all(&db_dir)?;
-
-        if let (Some(uid), Some(gid)) = (uid, gid) {
-            let _ = chown(&db_dir, Some(uid), Some(gid));
-        }
+        create_dir_all_with_owner(&db_dir, uid, gid)?;
 
         let db_path = db_dir.join("attributions.db");
         let conn = Connection::open(&db_path)?;

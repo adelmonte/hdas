@@ -112,11 +112,18 @@ impl Config {
         let path = Self::path();
 
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            let (_, uid, gid) = crate::db::get_user_info();
+            crate::db::create_dir_all_with_owner(parent, uid, gid)?;
         }
 
         let content = toml::to_string_pretty(self)?;
         std::fs::write(&path, content)?;
+
+        let (_, uid, gid) = crate::db::get_user_info();
+        if let (Some(u), Some(g)) = (uid, gid) {
+            let _ = std::os::unix::fs::chown(&path, Some(u), Some(g));
+        }
+
         Ok(())
     }
 
