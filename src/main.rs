@@ -27,6 +27,8 @@ enum Commands {
     Query { pattern: String },
     /// Show files created by a package
     Package { name: String },
+    /// Show files under a directory
+    Dir { path: String },
     /// Show files from uninstalled packages
     Orphans,
     /// Delete files created by a package
@@ -69,6 +71,7 @@ fn main() -> Result<()> {
         Commands::Stats => query::show_stats()?,
         Commands::Query { pattern } => query::query_file(&pattern)?,
         Commands::Package { name } => query::query_package(&name)?,
+        Commands::Dir { path } => query::query_directory(&path)?,
         Commands::Orphans => query::show_orphans()?,
         Commands::Clean { package, force } => query::clean_package(&package, force)?,
         Commands::Prune => query::prune()?,

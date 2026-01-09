@@ -1,6 +1,6 @@
 # HDAS - Home Directory Attribution System
 
-Track which packages create files in your home directory (`~/.cache`, `~/.local`, `~/.config`) using eBPF. Find and clean up orphaned files left behind by uninstalled packages.
+Track which packages create files in your home directory (`~/.cache`, `~/.local`, `~/.config`) and system directories (`/etc/`) using eBPF. Find and clean up orphaned files left behind by uninstalled packages.
 
 ![screenshot](demo.png)
 
@@ -17,6 +17,7 @@ HDAS uses eBPF to monitor file operations in real-time, attributing each file to
 - **eBPF-based monitoring** - Low overhead, kernel-level file access tracking
 - **Process tree walking** - Accurately attributes files from child processes (browser threads, worker pools) to their parent application
 - **Creator vs accessor tracking** - Distinguishes which package *created* a file from which package last *accessed* it
+- **Configurable directories** - Monitor home dotdirs and absolute paths like `/etc/` with per-directory depth settings
 - **Configurable ignored processes** - Editors, pagers, and shells don't overwrite creator attribution
 - **Orphan detection** - Find files from packages that are no longer installed
 - **Auto-pruning** - Automatically removes deleted files from the database
@@ -107,6 +108,10 @@ hdas query ".cache/spotify"
 hdas package firefox
 hdas package spotify
 
+# Show files under a directory
+hdas dir ~/.cache
+hdas dir /etc/
+
 # Find files from uninstalled packages
 hdas orphans
 ```
@@ -140,8 +145,19 @@ hdas config edit
 Configuration file: `~/.config/hdas/config.toml`
 
 ```toml
-# Directories to monitor
-monitored_dirs = [".cache", ".local", ".config"]
+# Directories to monitor with per-directory depth settings
+[[monitored_dirs]]
+path = ".cache"
+
+[[monitored_dirs]]
+path = ".local"
+
+[[monitored_dirs]]
+path = ".config"
+
+[[monitored_dirs]]
+path = "/etc/"
+depth = 0  # 0 = track full paths
 
 # Processes that don't overwrite creator attribution
 ignored_processes = [
@@ -154,10 +170,10 @@ ignored_processes = [
 # Packages to skip entirely (noisy apps like browsers)
 ignored_packages = []
 
-# How deep to track under monitored dirs
+# Default depth for dirs without explicit depth setting
 # 1 = app dir (e.g., ~/.cache/mozilla instead of ~/.cache/mozilla/firefox/cache2/...)
+# 0 = track full paths (useful for /etc/)
 # Note: ~/.local/share, ~/.local/state, and ~/.local/lib automatically add +1 depth
-# so with depth=1, you get ~/.local/share/appname instead of just ~/.local/share
 tracking_depth = 1
 
 # Auto-remove deleted files from DB on queries
@@ -172,7 +188,7 @@ HDAS uses an eBPF (Extended Berkeley Packet Filter) program that attaches to the
 
 The eBPF program runs in kernel space and:
 1. Captures the PID, process name (comm), and filename for each `openat()` syscall
-2. Performs initial path filtering in-kernel (only `.cache`, `.local`, `.config` paths)
+2. Performs initial path filtering in-kernel (configured directories like `.cache`, `.local`, `.config`, `/etc/`)
 3. Sends matching events to userspace via a perf ring buffer
 
 ### Package Resolution

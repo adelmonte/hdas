@@ -97,6 +97,29 @@ pub fn query_package(package: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn query_directory(dir: &str) -> Result<()> {
+    let db = crate::db::Database::new()?;
+
+    let pruned = maybe_prune(&db)?;
+    if pruned > 0 {
+        eprintln!("(auto-pruned {} deleted file(s))", pruned);
+    }
+
+    let records = db.query_directory(dir)?;
+
+    if records.is_empty() {
+        println!("No files found under: {}", dir);
+        return Ok(());
+    }
+
+    println!("Files under {} ({} total):\n", dir, records.len());
+    for record in records {
+        display_record(&record, true);
+    }
+
+    Ok(())
+}
+
 pub fn show_orphans() -> Result<()> {
     let db = crate::db::Database::new()?;
     let orphans = db.get_orphans()?;
@@ -171,7 +194,17 @@ pub fn show_stats() -> Result<()> {
     println!("Configuration");
     println!("-------------");
     println!("Config file: {}", Config::path().display());
-    println!("Monitored dirs: {:?}", config.monitored_dirs);
+    print!("Monitored dirs: ");
+    for (i, dir) in config.monitored_dirs.iter().enumerate() {
+        if i > 0 {
+            print!(", ");
+        }
+        match dir.depth {
+            Some(d) => print!("{}(depth={})", dir.path, d),
+            None => print!("{}", dir.path),
+        }
+    }
+    println!();
     println!("Ignored processes: {}", config.ignored_processes.len());
     println!("Auto-prune: {}", config.auto_prune);
 

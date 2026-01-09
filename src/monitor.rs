@@ -111,12 +111,40 @@ fn get_comm(pid: u32) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-fn get_tracked_path(full_path: &str, home: &std::path::Path, monitored_dirs: &[String], depth: u32) -> Option<String> {
+fn get_tracked_path(
+    full_path: &str,
+    home: &std::path::Path,
+    monitored_dirs: &[crate::config::MonitoredDir],
+    default_depth: u32,
+) -> Option<String> {
+    for dir in monitored_dirs {
+        if dir.path.starts_with('/') {
+            let base = dir.path.trim_end_matches('/');
+            if full_path.starts_with(base) && (full_path.len() == base.len() || full_path[base.len()..].starts_with('/')) {
+                let depth = dir.depth.unwrap_or(default_depth);
+                let after_base = full_path.strip_prefix(base).unwrap_or("").trim_start_matches('/');
+                if after_base.is_empty() || depth == 0 {
+                    return Some(full_path.to_string());
+                }
+                let parts: Vec<&str> = after_base.split('/').collect();
+                let tracked_parts: Vec<&str> = parts.iter().take(depth as usize).cloned().collect();
+                if tracked_parts.is_empty() {
+                    return Some(base.to_string());
+                }
+                return Some(format!("{}/{}", base, tracked_parts.join("/")));
+            }
+        }
+    }
+
     let home_str = home.to_string_lossy();
     let relative = full_path.strip_prefix(home_str.as_ref())?.trim_start_matches('/');
 
     for dir in monitored_dirs {
-        let dir_name = dir.trim_start_matches('.');
+        if dir.path.starts_with('/') {
+            continue;
+        }
+        let depth = dir.depth.unwrap_or(default_depth);
+        let dir_name = dir.path.trim_start_matches('.');
         let prefix = format!(".{}/", dir_name);
 
         if relative.starts_with(&prefix) {
@@ -152,10 +180,20 @@ pub fn run_monitor() -> Result<()> {
     let config = crate::config::Config::load()?;
 
     println!("HDAS Monitor starting...");
-    println!("Monitored directories: {:?}", config.monitored_dirs);
+    print!("Monitored directories: ");
+    for (i, dir) in config.monitored_dirs.iter().enumerate() {
+        if i > 0 {
+            print!(", ");
+        }
+        match dir.depth {
+            Some(d) => print!("{}(depth={})", dir.path, d),
+            None => print!("{}", dir.path),
+        }
+    }
+    println!();
     println!("Ignored processes: {} configured", config.ignored_processes.len());
     println!("Ignored packages: {} configured", config.ignored_packages.len());
-    println!("Tracking depth: {}", config.tracking_depth);
+    println!("Default tracking depth: {}", config.tracking_depth);
     println!("Process tree walking: enabled");
     println!();
 
@@ -207,11 +245,16 @@ pub fn run_monitor() -> Result<()> {
                 .trim_end_matches('\0');
 
             let is_monitored = monitored_dirs.iter().any(|dir| {
-                let dir_name = dir.trim_start_matches('.');
-                let pattern1 = format!("/.{}/", dir_name);
-                let pattern2 = format!(".{}/", dir_name);
-                filename.contains(&pattern1) || filename.starts_with(&pattern2)
-                    || filename.ends_with(&format!("/.{}", dir_name))
+                if dir.path.starts_with('/') {
+                    let base = dir.path.trim_end_matches('/');
+                    filename.starts_with(base) && (filename.len() == base.len() || filename[base.len()..].starts_with('/'))
+                } else {
+                    let dir_name = dir.path.trim_start_matches('.');
+                    let pattern1 = format!("/.{}/", dir_name);
+                    let pattern2 = format!(".{}/", dir_name);
+                    filename.contains(&pattern1) || filename.starts_with(&pattern2)
+                        || filename.ends_with(&format!("/.{}", dir_name))
+                }
             });
 
             if !is_monitored {

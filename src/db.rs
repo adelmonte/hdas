@@ -263,6 +263,30 @@ impl Database {
         records.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn query_directory(&self, dir: &str) -> Result<Vec<FileRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT path,
+                    created_by_package, created_by_process, created_at,
+                    last_accessed_by_package, last_accessed_by_process, last_accessed_at
+             FROM files WHERE path LIKE ?1 ORDER BY path"
+        )?;
+
+        let pattern = format!("{}%", dir.trim_end_matches('/'));
+        let records = stmt.query_map([pattern], |row| {
+            Ok(FileRecord {
+                path: row.get(0)?,
+                created_by_package: row.get(1)?,
+                created_by_process: row.get(2)?,
+                created_at: row.get(3)?,
+                last_accessed_by_package: row.get(4)?,
+                last_accessed_by_process: row.get(5)?,
+                last_accessed_at: row.get(6)?,
+            })
+        })?;
+
+        records.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     pub fn list_all(&self) -> Result<Vec<FileRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT path,

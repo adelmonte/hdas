@@ -1,12 +1,63 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashSet;
 use std::path::PathBuf;
+
+#[derive(Debug, Clone)]
+pub struct MonitoredDir {
+    pub path: String,
+    pub depth: Option<u32>,
+}
+
+impl MonitoredDir {
+    pub fn new(path: &str) -> Self {
+        Self {
+            path: path.to_string(),
+            depth: None,
+        }
+    }
+}
+
+impl Serialize for MonitoredDir {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeMap;
+        if self.depth.is_some() {
+            let mut map = serializer.serialize_map(Some(2))?;
+            map.serialize_entry("path", &self.path)?;
+            map.serialize_entry("depth", &self.depth)?;
+            map.end()
+        } else {
+            serializer.serialize_str(&self.path)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for MonitoredDir {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum MonitoredDirHelper {
+            Simple(String),
+            Full { path: String, depth: Option<u32> },
+        }
+
+        match MonitoredDirHelper::deserialize(deserializer)? {
+            MonitoredDirHelper::Simple(path) => Ok(MonitoredDir { path, depth: None }),
+            MonitoredDirHelper::Full { path, depth } => Ok(MonitoredDir { path, depth }),
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_monitored_dirs")]
-    pub monitored_dirs: Vec<String>,
+    pub monitored_dirs: Vec<MonitoredDir>,
 
     #[serde(default = "default_ignored_processes")]
     pub ignored_processes: Vec<String>,
@@ -21,11 +72,11 @@ pub struct Config {
     pub auto_prune: bool,
 }
 
-fn default_monitored_dirs() -> Vec<String> {
+fn default_monitored_dirs() -> Vec<MonitoredDir> {
     vec![
-        ".cache".to_string(),
-        ".local".to_string(),
-        ".config".to_string(),
+        MonitoredDir::new(".cache"),
+        MonitoredDir::new(".local"),
+        MonitoredDir::new(".config"),
     ]
 }
 
@@ -143,15 +194,22 @@ impl Config {
     #[allow(dead_code)]
     pub fn is_monitored_path(&self, path: &str) -> bool {
         for dir in &self.monitored_dirs {
-            let pattern1 = format!("/.{}/", dir.trim_start_matches('.'));
-            let pattern2 = format!(".{}/", dir.trim_start_matches('.'));
+            if dir.path.starts_with('/') {
+                let base = dir.path.trim_end_matches('/');
+                if path.starts_with(base) && (path.len() == base.len() || path[base.len()..].starts_with('/')) {
+                    return true;
+                }
+            } else {
+                let pattern1 = format!("/.{}/", dir.path.trim_start_matches('.'));
+                let pattern2 = format!(".{}/", dir.path.trim_start_matches('.'));
 
-            if path.contains(&pattern1) || path.starts_with(&pattern2) {
-                return true;
-            }
+                if path.contains(&pattern1) || path.starts_with(&pattern2) {
+                    return true;
+                }
 
-            if path.ends_with(&format!("/.{}", dir.trim_start_matches('.'))) {
-                return true;
+                if path.ends_with(&format!("/.{}", dir.path.trim_start_matches('.'))) {
+                    return true;
+                }
             }
         }
         false
@@ -166,11 +224,22 @@ impl Config {
 pub fn default_config_content() -> String {
     r#"# HDAS Configuration File
 
-monitored_dirs = [
-    ".cache",
-    ".local",
-    ".config",
-]
+# Directories to monitor
+# Use [[monitored_dirs]] for per-directory depth, or simple strings for global depth
+# depth = 0 means track full paths (no truncation)
+
+[[monitored_dirs]]
+path = ".cache"
+
+[[monitored_dirs]]
+path = ".local"
+
+[[monitored_dirs]]
+path = ".config"
+
+# [[monitored_dirs]]
+# path = "/etc/"
+# depth = 0
 
 ignored_processes = [
     "nvim", "vim", "vi", "nano", "emacs", "code", "subl", "hx", "kate", "gedit",
@@ -182,7 +251,7 @@ ignored_processes = [
 # Packages to skip entirely (noisy apps like browsers)
 ignored_packages = []
 
-# How deep to track under monitored dirs (1 = app dir like ~/.cache/mozilla)
+# Default depth for monitored dirs without explicit depth (1 = app dir like ~/.cache/mozilla)
 # Note: ~/.local/share, ~/.local/state, and ~/.local/lib automatically add +1 depth
 tracking_depth = 1
 
