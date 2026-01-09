@@ -105,7 +105,18 @@ pub fn query_directory(dir: &str) -> Result<()> {
         eprintln!("(auto-pruned {} deleted file(s))", pruned);
     }
 
-    let records = db.query_directory(dir)?;
+    let home = crate::db::get_user_home();
+    let expanded = if dir.starts_with('/') {
+        dir.to_string()
+    } else if let Some(rest) = dir.strip_prefix("~/") {
+        home.join(rest).to_string_lossy().into_owned()
+    } else if dir == "~" {
+        home.to_string_lossy().into_owned()
+    } else {
+        home.join(dir).to_string_lossy().into_owned()
+    };
+
+    let records = db.query_directory(&expanded)?;
 
     if records.is_empty() {
         println!("No files found under: {}", dir);
