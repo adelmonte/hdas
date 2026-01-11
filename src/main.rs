@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use anyhow::Result;
 
+mod cleanup;
 mod config;
 mod db;
 mod monitor;
@@ -36,6 +37,15 @@ enum Commands {
         package: String,
         #[arg(short, long)]
         force: bool,
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+    },
+    /// Delete all files from uninstalled packages
+    CleanOrphans {
+        #[arg(short, long)]
+        force: bool,
+        #[arg(short = 'n', long)]
+        dry_run: bool,
     },
     /// Remove deleted files from the database
     Prune,
@@ -73,8 +83,9 @@ fn main() -> Result<()> {
         Commands::Package { name } => query::query_package(&name)?,
         Commands::Dir { path } => query::query_directory(&path)?,
         Commands::Orphans => query::show_orphans()?,
-        Commands::Clean { package, force } => query::clean_package(&package, force)?,
-        Commands::Prune => query::prune()?,
+        Commands::Clean { package, force, dry_run } => cleanup::clean_package(&package, force, dry_run)?,
+        Commands::CleanOrphans { force, dry_run } => cleanup::clean_orphans(force, dry_run)?,
+        Commands::Prune => cleanup::prune()?,
         Commands::Config { action } => {
             match action {
                 Some(ConfigAction::Show) | None => query::show_config()?,

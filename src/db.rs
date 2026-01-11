@@ -347,11 +347,14 @@ impl Database {
             .collect())
     }
 
-    pub fn delete_package_records(&self, package: &str) -> Result<usize> {
-        let deleted = self.conn.execute(
-            "DELETE FROM files WHERE created_by_package = ?1",
-            [package]
-        )?;
+    pub fn delete_file_records(&self, paths: &[String]) -> Result<usize> {
+        let mut deleted = 0;
+        for path in paths {
+            deleted += self.conn.execute(
+                "DELETE FROM files WHERE path = ?1",
+                [path]
+            )?;
+        }
         Ok(deleted)
     }
 

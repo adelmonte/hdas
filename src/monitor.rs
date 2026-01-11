@@ -244,23 +244,6 @@ pub fn run_monitor() -> Result<()> {
                 .unwrap_or("unknown")
                 .trim_end_matches('\0');
 
-            let is_monitored = monitored_dirs.iter().any(|dir| {
-                if dir.path.starts_with('/') {
-                    let base = dir.path.trim_end_matches('/');
-                    filename.starts_with(base) && (filename.len() == base.len() || filename[base.len()..].starts_with('/'))
-                } else {
-                    let dir_name = dir.path.trim_start_matches('.');
-                    let pattern1 = format!("/.{}/", dir_name);
-                    let pattern2 = format!(".{}/", dir_name);
-                    filename.contains(&pattern1) || filename.starts_with(&pattern2)
-                        || filename.ends_with(&format!("/.{}", dir_name))
-                }
-            });
-
-            if !is_monitored {
-                return;
-            }
-
             let full_path = if filename.starts_with('/') {
                 std::path::PathBuf::from(filename)
             } else {
@@ -270,6 +253,23 @@ pub fn run_monitor() -> Result<()> {
             };
 
             let full_path_str = full_path.to_string_lossy();
+
+            let is_monitored = monitored_dirs.iter().any(|dir| {
+                if dir.path.starts_with('/') {
+                    let base = dir.path.trim_end_matches('/');
+                    full_path_str.starts_with(base) && (full_path_str.len() == base.len() || full_path_str[base.len()..].starts_with('/'))
+                } else {
+                    let dir_name = dir.path.trim_start_matches('.');
+                    let pattern1 = format!("/.{}/", dir_name);
+                    let pattern2 = format!(".{}/", dir_name);
+                    full_path_str.contains(&pattern1) || full_path_str.starts_with(&pattern2)
+                        || full_path_str.ends_with(&format!("/.{}", dir_name))
+                }
+            });
+
+            if !is_monitored {
+                return;
+            }
             let tracked_path = match get_tracked_path(&full_path_str, &home, &monitored_dirs, tracking_depth) {
                 Some(p) => p,
                 None => return,
