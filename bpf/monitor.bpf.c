@@ -15,51 +15,42 @@ struct {
     __uint(value_size, sizeof(__u32));
 } events SEC(".maps");
 
-static __always_inline int is_hdas_path(const char *path) {
-    #pragma unroll
-    for (int i = 0; i < 240; i++) {
-        if (path[i] == '\0')
-            break;
-        if (path[i] == '/' && path[i+1] == 'h' && path[i+2] == 'd' &&
-            path[i+3] == 'a' && path[i+4] == 's' && (path[i+5] == '/' || path[i+5] == '\0'))
-            return 1;
+static __always_inline int match_etc(const char *p) {
+    return p[0] == '/' && p[1] == 'e' && p[2] == 't' && p[3] == 'c' && p[4] == '/';
+}
+
+static __always_inline int match_dot_cache(const char *p) {
+    return p[0] == '.' && p[1] == 'c' && p[2] == 'a' && p[3] == 'c' &&
+           p[4] == 'h' && p[5] == 'e' && (p[6] == '/' || p[6] == '\0');
+}
+
+static __always_inline int match_dot_local(const char *p) {
+    return p[0] == '.' && p[1] == 'l' && p[2] == 'o' && p[3] == 'c' &&
+           p[4] == 'a' && p[5] == 'l' && (p[6] == '/' || p[6] == '\0');
+}
+
+static __always_inline int match_dot_config(const char *p) {
+    return p[0] == '.' && p[1] == 'c' && p[2] == 'o' && p[3] == 'n' &&
+           p[4] == 'f' && p[5] == 'i' && p[6] == 'g' && (p[7] == '/' || p[7] == '\0');
+}
+
+static __always_inline int match_dot_dir(const char *p) {
+    // Check for /. prefix (absolute paths like /home/user/.config)
+    if (p[0] == '/' && p[1] == '.') {
+        return match_dot_cache(p + 1) || match_dot_local(p + 1) || match_dot_config(p + 1);
+    }
+    // Check for relative paths starting with .cache, .local, .config
+    if (p[0] == '.') {
+        return match_dot_cache(p) || match_dot_local(p) || match_dot_config(p);
     }
     return 0;
 }
 
-static __always_inline int is_target_path(const char *path) {
-    #pragma unroll
+static __always_inline int is_hdas(const char *p) {
     for (int i = 0; i < 200; i++) {
-        if (path[i] == '\0')
-            break;
-
-        if (path[i] == '/' && path[i+1] == '.') {
-            if (path[i+2] == 'c' && path[i+3] == 'a' && path[i+4] == 'c' &&
-                path[i+5] == 'h' && path[i+6] == 'e' && (path[i+7] == '/' || path[i+7] == '\0'))
-                return 1;
-
-            if (path[i+2] == 'l' && path[i+3] == 'o' && path[i+4] == 'c' &&
-                path[i+5] == 'a' && path[i+6] == 'l' && (path[i+7] == '/' || path[i+7] == '\0'))
-                return 1;
-
-            if (path[i+2] == 'c' && path[i+3] == 'o' && path[i+4] == 'n' &&
-                path[i+5] == 'f' && path[i+6] == 'i' && path[i+7] == 'g' && (path[i+8] == '/' || path[i+8] == '\0'))
-                return 1;
-        }
+        if (p[i] == '\0') return 0;
+        if (p[i] == 'h' && p[i+1] == 'd' && p[i+2] == 'a' && p[i+3] == 's') return 1;
     }
-
-    if (path[0] == '.') {
-        if (path[1] == 'c' && path[2] == 'a' && path[3] == 'c' &&
-            path[4] == 'h' && path[5] == 'e' && (path[6] == '/' || path[6] == '\0'))
-            return 1;
-        if (path[1] == 'l' && path[2] == 'o' && path[3] == 'c' &&
-            path[4] == 'a' && path[5] == 'l' && (path[6] == '/' || path[6] == '\0'))
-            return 1;
-        if (path[1] == 'c' && path[2] == 'o' && path[3] == 'n' &&
-            path[4] == 'f' && path[5] == 'i' && path[6] == 'g' && (path[7] == '/' || path[7] == '\0'))
-            return 1;
-    }
-
     return 0;
 }
 
@@ -67,16 +58,22 @@ SEC("tracepoint/syscalls/sys_enter_openat")
 int trace_openat(void *ctx) {
     struct event e = {};
 
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    e.pid = pid_tgid >> 32;
-
+    e.pid = bpf_get_current_pid_tgid() >> 32;
     bpf_get_current_comm(&e.comm, sizeof(e.comm));
 
-    void *filename_ptr;
-    bpf_probe_read(&filename_ptr, sizeof(filename_ptr), ctx + 24);
-    bpf_probe_read_user_str(&e.filename, sizeof(e.filename), filename_ptr);
+    void *fname;
+    bpf_probe_read(&fname, sizeof(fname), ctx + 24);
+    bpf_probe_read_user_str(&e.filename, sizeof(e.filename), fname);
 
-    if (is_target_path(e.filename) && !is_hdas_path(e.filename)) {
+    int matched = match_etc(e.filename);
+    if (!matched) {
+        for (int i = 0; i < 200; i++) {
+            if (e.filename[i] == '\0') break;
+            if (match_dot_dir(&e.filename[i])) { matched = 1; break; }
+        }
+    }
+
+    if (matched && !is_hdas(e.filename)) {
         bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &e, sizeof(e));
     }
 

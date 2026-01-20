@@ -1,6 +1,5 @@
 use anyhow::Result;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::HashSet;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -184,40 +183,6 @@ impl Config {
             Config::default().save()?;
         }
         Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub fn is_ignored_process(&self, process: &str) -> bool {
-        self.ignored_processes.iter().any(|p| p == process)
-    }
-
-    #[allow(dead_code)]
-    pub fn is_monitored_path(&self, path: &str) -> bool {
-        for dir in &self.monitored_dirs {
-            if dir.path.starts_with('/') {
-                let base = dir.path.trim_end_matches('/');
-                if path.starts_with(base) && (path.len() == base.len() || path[base.len()..].starts_with('/')) {
-                    return true;
-                }
-            } else {
-                let pattern1 = format!("/.{}/", dir.path.trim_start_matches('.'));
-                let pattern2 = format!(".{}/", dir.path.trim_start_matches('.'));
-
-                if path.contains(&pattern1) || path.starts_with(&pattern2) {
-                    return true;
-                }
-
-                if path.ends_with(&format!("/.{}", dir.path.trim_start_matches('.'))) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    #[allow(dead_code)]
-    pub fn ignored_set(&self) -> HashSet<&str> {
-        self.ignored_processes.iter().map(|s| s.as_str()).collect()
     }
 }
 

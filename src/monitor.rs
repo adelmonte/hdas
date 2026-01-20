@@ -31,14 +31,14 @@ fn get_exe_path(pid: u32) -> Option<String> {
     })
 }
 
-fn query_pacman_cached(binary_path: &str, cache: &PackageCache) -> Option<String> {
-    if let Some(cached) = cache.borrow().get(binary_path) {
+fn query_pacman_cached(path: &str, cache: &PackageCache) -> Option<String> {
+    if let Some(cached) = cache.borrow().get(path) {
         return cached.clone();
     }
 
     let result = std::process::Command::new("pacman")
         .arg("-Qo")
-        .arg(binary_path)
+        .arg(path)
         .output()
         .ok()
         .and_then(|output| {
@@ -50,9 +50,10 @@ fn query_pacman_cached(binary_path: &str, cache: &PackageCache) -> Option<String
             }
         });
 
-    cache.borrow_mut().insert(binary_path.to_string(), result.clone());
+    cache.borrow_mut().insert(path.to_string(), result.clone());
     result
 }
+
 
 #[derive(Clone)]
 pub struct PackageInfo {
@@ -202,7 +203,7 @@ pub fn run_monitor() -> Result<()> {
     let open_skel = skel_builder.open(&mut open_object)?;
     let skel = open_skel.load()?;
 
-    let _link = skel
+    let _link_openat = skel
         .progs
         .trace_openat
         .attach_tracepoint("syscalls", "sys_enter_openat")?;
@@ -275,28 +276,27 @@ pub fn run_monitor() -> Result<()> {
                 None => return,
             };
 
-            let pkg_info = get_package_for_pid_tree(event.pid, comm, &package_cache);
+            let mut pkg_info = get_package_for_pid_tree(event.pid, comm, &package_cache);
+
+            if pkg_info.package == "pacman" || pkg_info.package == "unknown" {
+                if let Some(owner) = query_pacman_cached(&full_path_str, &package_cache) {
+                    pkg_info.package = owner;
+                }
+            }
 
             if ignored_packages.contains(&pkg_info.package) {
                 return;
             }
 
             let is_ignored_proc = ignored_processes.contains(&pkg_info.process);
-
             let path_exists = db.path_exists(&tracked_path);
             let has_known_creator = path_exists && db.path_has_known_creator(&tracked_path);
 
+            // Skip if: path exists AND (ignored process OR already has known creator)
+            // This allows "unknown" creator files to be updated when real package accesses them
             if path_exists && (is_ignored_proc || has_known_creator) {
                 return;
             }
-
-            let indicator = if is_ignored_proc {
-                "~"
-            } else if pkg_info.via_parent {
-                "^"
-            } else {
-                "+"
-            };
 
             if let Err(e) = db.record_access(
                 &tracked_path,
@@ -306,6 +306,14 @@ pub fn run_monitor() -> Result<()> {
             ) {
                 eprintln!("DB error: {}", e);
             }
+
+            let indicator = if is_ignored_proc {
+                "~"
+            } else if pkg_info.via_parent {
+                "^"
+            } else {
+                "+"
+            };
 
             let via = if pkg_info.via_parent {
                 format!(" via {}", pkg_info.process)
