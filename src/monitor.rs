@@ -231,7 +231,7 @@ pub fn run_monitor() -> Result<()> {
 
     let perf = libbpf_rs::PerfBufferBuilder::new(&skel.maps.events)
         .sample_cb(move |_cpu, data: &[u8]| {
-            if data.len() < std::mem::size_of::<Event>() {
+            if data.len() < std::mem::size_of::<Event>() || data.as_ptr().align_offset(std::mem::align_of::<Event>()) != 0 {
                 return;
             }
 

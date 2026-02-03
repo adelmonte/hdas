@@ -171,7 +171,9 @@ impl Config {
 
         let (_, uid, gid) = crate::db::get_user_info();
         if let (Some(u), Some(g)) = (uid, gid) {
-            let _ = std::os::unix::fs::chown(&path, Some(u), Some(g));
+            if let Err(e) = std::os::unix::fs::chown(&path, Some(u), Some(g)) {
+                eprintln!("Warning: failed to chown {}: {}", path.display(), e);
+            }
         }
 
         Ok(())

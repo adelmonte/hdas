@@ -49,7 +49,8 @@ static __always_inline int match_dot_dir(const char *p) {
 static __always_inline int is_hdas(const char *p) {
     for (int i = 0; i < 200; i++) {
         if (p[i] == '\0') return 0;
-        if (p[i] == 'h' && p[i+1] == 'd' && p[i+2] == 'a' && p[i+3] == 's') return 1;
+        if (p[i] == '/' && p[i+1] == 'h' && p[i+2] == 'd' && p[i+3] == 'a' && p[i+4] == 's'
+            && (p[i+5] == '/' || p[i+5] == '\0')) return 1;
     }
     return 0;
 }

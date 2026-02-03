@@ -20,7 +20,13 @@ pub fn get_user_info() -> (PathBuf, Option<u32>, Option<u32>) {
             }
         }
     }
-    (dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp")), None, None)
+    match dirs::home_dir() {
+        Some(home) => (home, None, None),
+        None => {
+            eprintln!("Warning: could not determine home directory, using /tmp");
+            (PathBuf::from("/tmp"), None, None)
+        }
+    }
 }
 
 pub fn get_user_home() -> PathBuf {
@@ -43,7 +49,9 @@ pub fn create_dir_all_with_owner(path: &std::path::Path, uid: Option<u32>, gid: 
     for dir in to_create.into_iter().rev() {
         std::fs::create_dir(&dir)?;
         if let (Some(u), Some(g)) = (uid, gid) {
-            let _ = chown(&dir, Some(u), Some(g));
+            if let Err(e) = chown(&dir, Some(u), Some(g)) {
+                eprintln!("Warning: failed to chown {}: {}", dir.display(), e);
+            }
         }
     }
 
@@ -62,7 +70,9 @@ impl Database {
         Self::migrate(&conn)?;
 
         if let (Some(uid), Some(gid)) = (uid, gid) {
-            let _ = chown(&db_path, Some(uid), Some(gid));
+            if let Err(e) = chown(&db_path, Some(uid), Some(gid)) {
+                eprintln!("Warning: failed to chown {}: {}", db_path.display(), e);
+            }
         }
 
         Ok(Self { conn })
