@@ -31,24 +31,12 @@ fn get_exe_path(pid: u32) -> Option<String> {
     })
 }
 
-fn query_pacman_cached(path: &str, cache: &PackageCache) -> Option<String> {
+fn query_owner_cached(path: &str, pm: &crate::pkgmgr::PkgMgr, cache: &PackageCache) -> Option<String> {
     if let Some(cached) = cache.borrow().get(path) {
         return cached.clone();
     }
 
-    let result = std::process::Command::new("pacman")
-        .arg("-Qo")
-        .arg(path)
-        .output()
-        .ok()
-        .and_then(|output| {
-            if output.status.success() {
-                let text = String::from_utf8_lossy(&output.stdout);
-                text.split_whitespace().nth(4).map(|s| s.to_string())
-            } else {
-                None
-            }
-        });
+    let result = pm.query_owner(path);
 
     cache.borrow_mut().insert(path.to_string(), result.clone());
     result
@@ -62,13 +50,13 @@ pub struct PackageInfo {
     pub via_parent: bool,
 }
 
-fn get_package_for_pid_tree(pid: u32, comm: &str, cache: &PackageCache) -> PackageInfo {
+fn get_package_for_pid_tree(pid: u32, comm: &str, pm: &crate::pkgmgr::PkgMgr, cache: &PackageCache) -> PackageInfo {
     let mut current_pid = pid;
     let mut depth = 0;
     const MAX_DEPTH: u32 = 10;
 
     if let Some(exe) = get_exe_path(pid) {
-        if let Some(pkg) = query_pacman_cached(&exe, cache) {
+        if let Some(pkg) = query_owner_cached(&exe, pm, cache) {
             return PackageInfo {
                 package: pkg,
                 process: comm.to_string(),
@@ -84,7 +72,7 @@ fn get_package_for_pid_tree(pid: u32, comm: &str, cache: &PackageCache) -> Packa
         };
 
         if let Some(exe) = get_exe_path(ppid) {
-            if let Some(pkg) = query_pacman_cached(&exe, cache) {
+            if let Some(pkg) = query_owner_cached(&exe, pm, cache) {
                 let parent_comm = get_comm(ppid).unwrap_or_else(|| "unknown".to_string());
                 return PackageInfo {
                     package: pkg,
@@ -112,7 +100,7 @@ fn get_comm(pid: u32) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-fn get_tracked_path(
+pub fn get_tracked_path(
     full_path: &str,
     home: &std::path::Path,
     monitored_dirs: &[crate::config::MonitoredDir],
@@ -180,7 +168,11 @@ fn get_tracked_path(
 pub fn run_monitor() -> Result<()> {
     let config = crate::config::Config::load()?;
 
+    let pm = crate::pkgmgr::PkgMgr::detect()
+        .ok_or_else(|| anyhow::anyhow!("No supported package manager found (need pacman, dpkg, rpm, xbps, or apk)"))?;
+
     println!("HDAS Monitor starting...");
+    println!("Package manager: {}", pm.name());
     print!("Monitored directories: ");
     for (i, dir) in config.monitored_dirs.iter().enumerate() {
         if i > 0 {
@@ -276,10 +268,10 @@ pub fn run_monitor() -> Result<()> {
                 None => return,
             };
 
-            let mut pkg_info = get_package_for_pid_tree(event.pid, comm, &package_cache);
+            let mut pkg_info = get_package_for_pid_tree(event.pid, comm, &pm, &package_cache);
 
-            if pkg_info.package == "pacman" || pkg_info.package == "unknown" {
-                if let Some(owner) = query_pacman_cached(&full_path_str, &package_cache) {
+            if pm.is_self_package(&pkg_info.package) || pkg_info.package == "unknown" {
+                if let Some(owner) = query_owner_cached(&full_path_str, &pm, &package_cache) {
                     pkg_info.package = owner;
                 }
             }

@@ -1,32 +1,35 @@
 # HDAS - Home Directory Attribution System
 
-Track which packages create files in your home directory (`~/.cache`, `~/.local`, `~/.config`) and system directories (`/etc/`) using eBPF. Find and clean up orphaned files left behind by uninstalled packages.
+Track which packages create files in your home directory. Uses eBPF to monitor file operations in real-time, so when you uninstall a package you can find and clean up everything it left behind.
 
 ![screenshot](demo.png)
 
 ## The Problem
 
-Linux applications scatter files across your home directory in `.cache`, `.local`, `.config`, and other dotfile directories. When you uninstall a package, these files often remain as cruft. Worse, the files and folders frequently don't match the package names, making manual cleanup tedious and error-prone.
+Linux applications scatter files across `~/.cache`, `~/.local`, `~/.config`, `/etc/`, and other directories. When you uninstall a package, these files remain. The files and folders frequently don't match the package names, making manual cleanup tedious and error-prone.
 
 ## The Solution
 
-HDAS uses eBPF to monitor file operations in real-time, attributing each file to the package that created it. When you uninstall a package, you can easily find and remove its leftover files.
+HDAS attaches an eBPF program to the kernel's `openat` syscall to trace file operations in real-time with minimal overhead. Each file access is resolved to its originating package through process tree walking and package manager queries. The result is a database mapping every tracked file to the package that created it — queryable, cleanable, and exportable as JSON.
 
 ## Features
 
-- **eBPF-based monitoring** - Low overhead, kernel-level file access tracking
-- **Process tree walking** - Accurately attributes files from child processes (browser threads, worker pools) to their parent application
-- **Creator vs accessor tracking** - Distinguishes which package *created* a file from which package last *accessed* it
-- **Configurable directories** - Monitor home dotdirs and absolute paths like `/etc/` with per-directory depth settings
-- **Configurable ignored processes** - Editors, pagers, and shells don't overwrite creator attribution
-- **Orphan detection** - Find files from packages that are no longer installed
-- **Auto-pruning** - Automatically removes deleted files from the database
-- **Safe cleanup** - Delete files by package with confirmation prompts
+- **eBPF-based monitoring** — Kernel-level file access tracking with negligible overhead
+- **Process tree walking** — Attributes files from child processes (browser threads, worker pools) to their parent package
+- **Creator vs accessor tracking** — Distinguishes which package *created* a file from which *last accessed* it
+- **Multi-distro support** — Auto-detects pacman, dpkg, rpm, xbps, and apk at runtime
+- **Configurable directories** — Monitor home dotdirs and absolute paths like `/etc/` with per-directory depth settings
+- **Orphan detection** — Find files from packages that are no longer installed
+- **Safe cleanup** — Delete files by package with dry-run and confirmation prompts, including symlink-aware deletion
+- **JSON output** — `--json` flag on all query and cleanup commands for scripting
+- **Colored terminal output** — Automatically disabled when piped
+- **Shell completions** — Bash, Zsh, Fish, Elvish, PowerShell
+- **Man page generation** — Built-in via `hdas man-page`
 
 ## Requirements
 
 - Linux kernel 5.8+ with eBPF support
-- Arch Linux (uses `pacman` for package attribution)
+- A supported package manager: pacman, dpkg, rpm, xbps, or apk
 - `clang` and `libbpf` for building
 - Root privileges for monitoring
 
@@ -45,7 +48,7 @@ yay -S hdas-git
 ### Building from source
 
 ```bash
-# Install dependencies (Arch Linux)
+# Install build dependencies (example for Arch)
 sudo pacman -S clang libbpf rust
 
 # Clone and build
@@ -58,19 +61,25 @@ sudo install -Dm755 target/release/hdas /usr/bin/hdas
 sudo install -Dm644 hdas@.service /usr/lib/systemd/system/hdas@.service
 ```
 
-### Running as a Service
-
-To run the monitor automatically at boot:
+### Shell completions and man page
 
 ```bash
-# Copy the service file
-sudo cp hdas@.service /etc/systemd/system/
+# Completions (pick your shell)
+hdas completions bash > /usr/share/bash-completion/completions/hdas
+hdas completions zsh  > /usr/share/zsh/site-functions/_hdas
+hdas completions fish > ~/.config/fish/completions/hdas.fish
 
-# Enable and start for your user (replace YOUR_USERNAME)
+# Man page
+hdas man-page > /usr/share/man/man1/hdas.1
+```
+
+### Running as a service
+
+```bash
 sudo systemctl enable --now hdas@YOUR_USERNAME
 
 # Check status
-sudo systemctl status hdas@YOUR_USERNAME
+hdas status
 
 # View logs
 sudo journalctl -u hdas@YOUR_USERNAME -f
@@ -78,55 +87,56 @@ sudo journalctl -u hdas@YOUR_USERNAME -f
 
 ## Usage
 
-### Start Monitoring
+### Querying
 
 ```bash
-sudo hdas monitor
-```
-
-The monitor runs in the foreground, capturing file operations and attributing them to packages. Output indicators:
-- `[+]` Direct match - process owns the file
-- `[^]` Parent match - attributed via ancestor process
-- `[~]` Ignored process - accessor only, doesn't overwrite creator
-
-Press `Ctrl+C` to stop.
-
-### Query Commands
-
-```bash
-# Show database statistics
-hdas stats
-
 # List all tracked files
 hdas list
 
-# Search files by path pattern
-hdas query mozilla
-hdas query ".cache/spotify"
-
 # Show files created by a specific package
 hdas package firefox
-hdas package spotify
 
 # Show files under a directory
 hdas dir ~/.cache
 hdas dir /etc/
 
+# Search files by path pattern
+hdas query mozilla
+
 # Find files from uninstalled packages
 hdas orphans
 ```
 
-### Cleanup Commands
+### Cleanup
 
 ```bash
-# Remove files created by a package (with confirmation)
+# Delete files created by a package (with confirmation)
 hdas clean firefox
 
-# Skip confirmation prompt
+# Dry-run — show what would be deleted
+hdas clean firefox -n
+
+# Skip confirmation
 hdas clean firefox -f
 
-# Manually prune deleted files from database
+# Delete all files from uninstalled packages
+hdas clean-orphans
+
+# Remove database records for files that no longer exist
 hdas prune
+```
+
+### Info
+
+```bash
+# Service, database, and config overview
+hdas status
+
+# Detailed database and configuration statistics
+hdas stats
+
+# See how a path gets tracked (depth truncation)
+hdas explain ~/.cache/mozilla/firefox/something
 ```
 
 ### Configuration
@@ -138,14 +148,52 @@ hdas config
 # Create default config file
 hdas config init
 
-# Edit configuration
+# Edit in $EDITOR
 hdas config edit
+
+# Check for errors and warnings
+hdas config validate
 ```
 
-Configuration file: `~/.config/hdas/config.toml`
+### JSON output
+
+All query and cleanup commands support `--json` for scripting:
+
+```bash
+hdas list --json
+hdas stats --json
+hdas orphans --json
+hdas status --json
+hdas clean firefox -n --json
+hdas config validate --json
+```
+
+### Monitor
+
+```bash
+# Start the eBPF monitor (requires root)
+sudo hdas monitor
+```
+
+Output indicators:
+- `[+]` Direct match — process owns the file
+- `[^]` Parent match — attributed via ancestor process
+- `[~]` Ignored process — accessor only, doesn't overwrite creator
+
+### Configuration file
+
+Location: `~/.config/hdas/config.toml`
 
 ```toml
 # Directories to monitor with per-directory depth settings
+#
+# Depth controls how much of the path is kept after the monitored dir:
+#   depth=1: ~/.cache/mozilla/firefox/... -> ~/.cache/mozilla
+#   depth=2: ~/.cache/mozilla/firefox/... -> ~/.cache/mozilla/firefox
+#   depth=0: full path, no truncation
+#
+# Use `hdas explain <path>` to see how a path would be tracked.
+
 [[monitored_dirs]]
 path = ".cache"
 
@@ -157,7 +205,7 @@ path = ".config"
 
 [[monitored_dirs]]
 path = "/etc/"
-depth = 0  # 0 = track full paths
+depth = 0  # track full paths
 
 # Processes that don't overwrite creator attribution
 ignored_processes = [
@@ -167,13 +215,13 @@ ignored_processes = [
     "bash", "zsh", "fish",     # shells
 ]
 
-# Packages to skip entirely (noisy apps like browsers)
+# Packages to skip entirely
 ignored_packages = []
 
 # Default depth for dirs without explicit depth setting
-# 1 = app dir (e.g., ~/.cache/mozilla instead of ~/.cache/mozilla/firefox/cache2/...)
+# 1 = app dir (e.g., ~/.cache/mozilla)
 # 0 = track full paths (useful for /etc/)
-# Note: ~/.local/share, ~/.local/state, and ~/.local/lib automatically add +1 depth
+# Note: ~/.local/share, ~/.local/state, ~/.local/lib automatically add +1 depth
 tracking_depth = 1
 
 # Auto-remove deleted files from DB on queries
@@ -182,174 +230,93 @@ auto_prune = true
 
 ## How It Works
 
-### eBPF Monitoring
+### eBPF monitoring
 
-HDAS uses an eBPF (Extended Berkeley Packet Filter) program that attaches to the kernel's `sys_enter_openat` tracepoint. This captures every file open operation system-wide with minimal overhead.
+HDAS attaches an eBPF program to the kernel's `sys_enter_openat` tracepoint. This captures every file open operation system-wide with minimal overhead.
 
 The eBPF program runs in kernel space and:
-1. Captures the PID, process name (comm), and filename for each `openat()` syscall
-2. Performs initial path filtering in-kernel (configured directories like `.cache`, `.local`, `.config`, `/etc/`)
+1. Captures the PID, process name, and filename for each `openat()` syscall
+2. Performs initial path filtering in-kernel for configured directories
 3. Sends matching events to userspace via a perf ring buffer
 
-### Package Resolution
+### Package resolution
 
-When a file access event is received, HDAS needs to determine which package is responsible. This is done by:
+When a file access event is received, HDAS determines the responsible package by:
 
-1. Reading `/proc/<pid>/exe` to get the process's executable path
-2. Querying `pacman -Qo <path>` to find which package owns that binary
-3. If found, attribute the file to that package
+1. Reading `/proc/<pid>/exe` to get the executable path
+2. Querying the system package manager to find which package owns that binary
+3. Caching results by binary path so repeated accesses don't re-query
 
-Results are cached by binary path, so repeated file accesses from the same program only query pacman once.
+The package manager is auto-detected at startup (pacman, dpkg, rpm, xbps, or apk).
 
-**Example:** Process `firefox` (PID 1234) opens `~/.cache/mozilla/cookies.sqlite`
+**Example:** Firefox opens `~/.cache/mozilla/cookies.sqlite`
 ```
 /proc/1234/exe → /usr/lib/firefox/firefox
-pacman -Qo /usr/lib/firefox/firefox → "firefox 120.0-1"
+pacman -Qo /usr/lib/firefox/firefox → "firefox"
 Attribution: firefox
 ```
 
-### Process Tree Walking
+### Process tree walking
 
-The simple approach fails for many real-world cases:
+Simple PID-to-package resolution fails for many real-world cases:
 
-- **Thread pools** - Firefox uses `Isolated Web Co`, `StreamTrans`, `Cache2 I/O` threads
-- **Forked children** - Many apps spawn short-lived worker processes
-- **Race conditions** - Process exits before we can read `/proc/<pid>/exe`
+- **Thread pools** — Firefox uses `Isolated Web Co`, `StreamTrans`, `Cache2 I/O` threads
+- **Forked children** — Many apps spawn short-lived worker processes
+- **Race conditions** — Process exits before we can read `/proc/<pid>/exe`
 
 HDAS solves this by walking up the process tree:
 
 ```
 1. Try to resolve PID's own /proc/<pid>/exe → package
-2. If that fails:
-   a. Read /proc/<pid>/stat to get parent PID (PPID)
+2. If that fails, walk up via PPID:
+   a. Read /proc/<pid>/stat to get parent PID
    b. Try to resolve parent's exe → package
-   c. Repeat up the tree
-3. Stop at:
-   - PID 1 (init/systemd)
-   - 10 levels deep (safety limit)
-   - First successful package match
-4. Return the package and which process matched
+   c. Repeat (up to 10 levels, stopping at PID 1)
+3. Return the first successful package match
 ```
 
-**Example:** Firefox content process writes to cache
-
-```
-Process: "Isolated Web Co" (PID 5678)
-├── /proc/5678/exe → fails (sandboxed/forked)
-├── PPID: 5432 (forkserver)
-│   └── /proc/5432/exe → fails
-├── PPID: 5013 (firefox)
-│   └── /proc/5013/exe → /usr/lib/firefox-developer-edition/firefox
-│   └── pacman -Qo → firefox-developer-edition
-└── Attribution: firefox-developer-edition (via parent)
-```
-
-### Monitor Output
-
-When running `sudo hdas monitor`, each file access is logged with an indicator:
-
-| Indicator | Meaning | Example |
-|-----------|---------|---------|
-| `[+]` | **Direct match** - The process itself is owned by the package | `[+] firefox (firefox) -> ~/.cache/mozilla/...` |
-| `[^]` | **Parent match** - Attributed via ancestor in process tree | `[^] firefox (Isolated Web Co) via firefox -> ~/.cache/mozilla/...` |
-| `[~]` | **Ignored process** - In ignore list, only updates last_accessed | `[~] coreutils (cat) -> ~/.config/foo.conf` |
-
-**Format:** `[indicator] package (process) [via parent] -> filepath`
-
-### Creator vs Accessor Tracking
+### Creator vs accessor tracking
 
 HDAS distinguishes between the process that *created* a file and processes that later *accessed* it.
 
 **Problem:** If you `cat ~/.config/app/settings.conf`, the file gets attributed to `coreutils` instead of the app that created it.
 
-**Solution:** The config file defines "ignored processes" - tools that read files but don't create them:
+**Solution:** Configured "ignored processes" (editors, pagers, shells) only update the `last_accessed_by` field, never overwriting `created_by`. This ensures that opening a config in vim doesn't lose the original creator attribution.
 
-```toml
-ignored_processes = [
-    # Editors - you're editing, not creating
-    "nvim", "vim", "code", "emacs",
-    # Pagers - read-only access
-    "cat", "bat", "less", "more", "head", "tail",
-    # File tools - inspection only
-    "ls", "find", "fd", "rg", "grep", "file", "stat",
-    # Shells - reading configs
-    "bash", "zsh", "fish",
-]
-```
-
-**Behavior:**
-- **Non-ignored process accesses file:**
-  - If file is new: set `created_by` and `last_accessed_by` to this process/package
-  - If file exists: update `last_accessed_by`, preserve `created_by`
-- **Ignored process accesses file:**
-  - If file is new: set `created_by` to "unknown", set `last_accessed_by` to this process
-  - If file exists: only update `last_accessed_by`, never touch `created_by`
-
-This ensures that opening a config in vim doesn't overwrite the original creator attribution.
-
-### Database Schema
+### Database schema
 
 ```sql
 CREATE TABLE files (
     path TEXT PRIMARY KEY,
-
-    -- Who created this file (first non-ignored process)
     created_by_package TEXT,
     created_by_process TEXT,
-    created_at INTEGER,          -- Unix timestamp
-
-    -- Who last accessed this file (any process)
+    created_at INTEGER,
     last_accessed_by_package TEXT,
     last_accessed_by_process TEXT,
-    last_accessed_at INTEGER     -- Unix timestamp
+    last_accessed_at INTEGER
 );
-
-CREATE INDEX idx_package ON files(created_by_package);
-CREATE INDEX idx_last_package ON files(last_accessed_by_package);
 ```
 
-**Migration:** When upgrading from an older version, existing data is migrated automatically. The old `package`/`process` fields are copied to both `created_by_*` and `last_accessed_by_*` columns.
-
-### Auto-Pruning
-
-Files get deleted all the time (cache expiry, manual cleanup, app behavior). By default, HDAS automatically removes database entries for files that no longer exist when you run any query command.
-
-```bash
-$ hdas list
-(auto-pruned 76 deleted file(s))
-Cataloged files (137 total):
-...
-```
-
-This can be disabled in config:
-
-```toml
-auto_prune = false
-```
-
-Or run manually:
-
-```bash
-hdas prune
-```
+Existing databases from older versions are migrated automatically on first open.
 
 ## Limitations
 
-- **Arch Linux only** - Package attribution uses `pacman`. Contributions for other distros welcome.
-- **Monitoring must be running** - Only tracks files accessed while the monitor is active
-- **Some "unknown" attributions** - Processes not in pacman's database (AUR binaries in `~/.local/bin`, scripts, etc.) show as "unknown"
-- **No retroactive attribution** - Files created before monitoring started won't be attributed
+- **Monitoring must be running** — Only tracks files accessed while the monitor is active
+- **Some "unknown" attributions** — Processes not in the package manager's database (AUR binaries, scripts in `~/.local/bin`, etc.) show as "unknown"
+- **No retroactive attribution** — Files created before monitoring started won't be attributed
 
 ## Project Structure
 
 ```
 hdas/
 ├── src/
-│   ├── main.rs      # CLI entry point
+│   ├── main.rs      # CLI, subcommand dispatch
 │   ├── monitor.rs   # eBPF event processing, process tree walking
 │   ├── db.rs        # SQLite database, schema migrations
-│   ├── query.rs     # Query and cleanup commands
-│   └── config.rs    # Configuration loading
+│   ├── query.rs     # Query commands, JSON/colored output
+│   ├── cleanup.rs   # File deletion, symlink handling
+│   ├── config.rs    # Configuration loading and defaults
+│   └── pkgmgr.rs    # Package manager abstraction (pacman, dpkg, rpm, xbps, apk)
 ├── bpf/
 │   └── monitor.bpf.c  # eBPF kernel program
 ├── build.rs         # Compiles eBPF code at build time
@@ -359,4 +326,4 @@ hdas/
 
 ## License
 
-GPL-3.0 - See [LICENSE](LICENSE) for details.
+GPL-3.0 — See [LICENSE](LICENSE) for details.

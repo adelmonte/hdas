@@ -1,5 +1,6 @@
 use anyhow::Result;
 use rusqlite::{Connection, params};
+use serde::Serialize;
 use std::path::PathBuf;
 use std::os::unix::fs::chown;
 
@@ -336,14 +337,11 @@ impl Database {
     }
 
     pub fn get_orphans(&self) -> Result<Vec<String>> {
-        let output = std::process::Command::new("pacman")
-            .arg("-Qq")
-            .output()?;
+        let pm = crate::pkgmgr::PkgMgr::detect()
+            .ok_or_else(|| anyhow::anyhow!("No supported package manager found (need pacman, dpkg, rpm, xbps, or apk)"))?;
 
-        let installed: std::collections::HashSet<String> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(|s| s.to_string())
-            .collect();
+        let installed = pm.list_installed()
+            .map_err(|e| anyhow::anyhow!("Failed to list installed packages via {}: {}", pm.name(), e))?;
 
         let mut stmt = self.conn.prepare(
             "SELECT DISTINCT created_by_package FROM files WHERE created_by_package != 'unknown'"
@@ -376,6 +374,15 @@ impl Database {
         ).unwrap_or(false)
     }
 
+    pub fn get_last_event_time(&self) -> Result<Option<i64>> {
+        let result: Option<i64> = self.conn.query_row(
+            "SELECT MAX(last_accessed_at) FROM files",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(result)
+    }
+
     pub fn path_has_known_creator(&self, path: &str) -> bool {
         self.conn.query_row(
             "SELECT 1 FROM files WHERE path = ?1 AND created_by_package != 'unknown'",
@@ -385,7 +392,7 @@ impl Database {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct FileRecord {
     pub path: String,
     pub created_by_package: String,

@@ -193,7 +193,13 @@ pub fn default_config_content() -> String {
 
 # Directories to monitor
 # Use [[monitored_dirs]] for per-directory depth, or simple strings for global depth
-# depth = 0 means track full paths (no truncation)
+#
+# Depth controls how much of the path is kept after the monitored dir:
+#   depth=1: ~/.cache/mozilla/firefox/... -> ~/.cache/mozilla
+#   depth=2: ~/.cache/mozilla/firefox/... -> ~/.cache/mozilla/firefox
+#   depth=0: full path, no truncation
+#
+# Use `hdas explain <path>` to see how a path would be tracked.
 
 [[monitored_dirs]]
 path = ".cache"
