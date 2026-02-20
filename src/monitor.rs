@@ -220,6 +220,7 @@ pub fn run_monitor() -> Result<()> {
         .collect();
 
     let package_cache: PackageCache = RefCell::new(HashMap::new());
+    let monitor_pid = std::process::id();
 
     let perf = libbpf_rs::PerfBufferBuilder::new(&skel.maps.events)
         .sample_cb(move |_cpu, data: &[u8]| {
@@ -228,6 +229,22 @@ pub fn run_monitor() -> Result<()> {
             }
 
             let event = unsafe { &*(data.as_ptr() as *const Event) };
+
+            if event.pid == monitor_pid {
+                return;
+            }
+            let mut ancestor = event.pid;
+            for _ in 0..5 {
+                match get_ppid(ancestor) {
+                    Some(p) if p > 1 => {
+                        if p == monitor_pid {
+                            return;
+                        }
+                        ancestor = p;
+                    }
+                    _ => break,
+                }
+            }
 
             let comm = std::str::from_utf8(&event.comm)
                 .unwrap_or("unknown")
