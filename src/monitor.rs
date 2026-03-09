@@ -208,6 +208,7 @@ pub fn run_monitor() -> Result<()> {
 
     let monitored_dirs = config.monitored_dirs.clone();
     let tracking_depth = config.tracking_depth;
+    let excluded_paths = config.excluded_paths.clone();
     let ignored_processes: std::collections::HashSet<String> = config
         .ignored_processes
         .iter()
@@ -263,6 +264,14 @@ pub fn run_monitor() -> Result<()> {
             };
 
             let full_path_str = full_path.to_string_lossy();
+
+            if excluded_paths.iter().any(|ex| {
+                let base = ex.trim_end_matches('/');
+                full_path_str.starts_with(base)
+                    && (full_path_str.len() == base.len() || full_path_str[base.len()..].starts_with('/'))
+            }) {
+                return;
+            }
 
             let is_monitored = monitored_dirs.iter().any(|dir| {
                 if dir.path.starts_with('/') {

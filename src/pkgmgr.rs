@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::process::Command;
+use std::time::Duration;
 
 /// Detected system package manager
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,20 +101,23 @@ impl PkgMgr {
 
     /// Query which package owns a given filesystem path.
     pub fn query_owner(&self, path: &str) -> Option<String> {
+        const TIMEOUT: Duration = Duration::from_secs(10);
         match self {
             Self::Pacman => {
-                let output = Command::new("pacman")
-                    .args(["-Qo", path])
-                    .output().ok()?;
+                let output = run_with_timeout(
+                    Command::new("pacman").args(["-Qo", path]),
+                    TIMEOUT,
+                )?;
                 if !output.status.success() { return None; }
                 let text = String::from_utf8_lossy(&output.stdout);
                 // "/<path> is owned by <package> <version>"
                 text.split_whitespace().nth(4).map(|s| s.to_string())
             }
             Self::Dpkg => {
-                let output = Command::new("dpkg")
-                    .args(["-S", path])
-                    .output().ok()?;
+                let output = run_with_timeout(
+                    Command::new("dpkg").args(["-S", path]),
+                    TIMEOUT,
+                )?;
                 if !output.status.success() { return None; }
                 let text = String::from_utf8_lossy(&output.stdout);
                 // "package: /path" or "package:arch: /path"
@@ -122,17 +126,19 @@ impl PkgMgr {
                 if pkg.is_empty() { None } else { Some(pkg.to_string()) }
             }
             Self::Rpm => {
-                let output = Command::new("rpm")
-                    .args(["-qf", "--qf", "%{NAME}", path])
-                    .output().ok()?;
+                let output = run_with_timeout(
+                    Command::new("rpm").args(["-qf", "--qf", "%{NAME}", path]),
+                    TIMEOUT,
+                )?;
                 if !output.status.success() { return None; }
                 let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if text.is_empty() || text.contains("not owned") { None } else { Some(text) }
             }
             Self::Xbps => {
-                let output = Command::new("xbps-query")
-                    .args(["-o", path])
-                    .output().ok()?;
+                let output = run_with_timeout(
+                    Command::new("xbps-query").args(["-o", path]),
+                    TIMEOUT,
+                )?;
                 if !output.status.success() { return None; }
                 let text = String::from_utf8_lossy(&output.stdout);
                 // "<pkg>-<ver>: /path"
@@ -143,9 +149,10 @@ impl PkgMgr {
                 if name.is_empty() { None } else { Some(name.to_string()) }
             }
             Self::Apk => {
-                let output = Command::new("apk")
-                    .args(["info", "--who-owns", path])
-                    .output().ok()?;
+                let output = run_with_timeout(
+                    Command::new("apk").args(["info", "--who-owns", path]),
+                    TIMEOUT,
+                )?;
                 if !output.status.success() { return None; }
                 let text = String::from_utf8_lossy(&output.stdout);
                 // "<path> is owned by <package>-<version>"
@@ -171,6 +178,30 @@ impl PkgMgr {
     /// Returns true if the given package name is the package manager itself.
     pub fn is_self_package(&self, pkg: &str) -> bool {
         self.manager_package_names().iter().any(|&n| n == pkg)
+    }
+}
+
+fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process::Output> {
+    use std::time::Instant;
+
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => return None,
+        }
     }
 }
 

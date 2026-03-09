@@ -218,6 +218,14 @@ ignored_processes = [
 # Packages to skip entirely
 ignored_packages = []
 
+# Paths to exclude from monitoring even if under a monitored_dir
+# Useful for high-traffic subdirectories that generate noise (SSL certs,
+# browser caches, build directories, etc.)
+excluded_paths = [
+    "/etc/ssl/",        # TLS cert reads — owned by ca-certificates, very noisy
+    # "/etc/pacman.d/gnupg/",  # GPG keyring reads during package operations
+]
+
 # Default depth for dirs without explicit depth setting
 # 1 = app dir (e.g., ~/.cache/mozilla)
 # 0 = track full paths (useful for /etc/)

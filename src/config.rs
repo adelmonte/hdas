@@ -64,6 +64,9 @@ pub struct Config {
     #[serde(default = "default_ignored_packages")]
     pub ignored_packages: Vec<String>,
 
+    #[serde(default)]
+    pub excluded_paths: Vec<String>,
+
     #[serde(default = "default_tracking_depth")]
     pub tracking_depth: u32,
 
@@ -132,6 +135,7 @@ impl Default for Config {
             monitored_dirs: default_monitored_dirs(),
             ignored_processes: default_ignored_processes(),
             ignored_packages: default_ignored_packages(),
+            excluded_paths: vec![],
             tracking_depth: default_tracking_depth(),
             auto_prune: default_auto_prune(),
         }
@@ -223,6 +227,13 @@ ignored_processes = [
 
 # Packages to skip entirely (noisy apps like browsers)
 ignored_packages = []
+
+# Paths to exclude from monitoring even if under a monitored_dir
+# excluded_paths = [
+#     "/etc/ssl/",
+#     "/etc/pacman.d/gnupg/",
+# ]
+excluded_paths = []
 
 # Default depth for monitored dirs without explicit depth (1 = app dir like ~/.cache/mozilla)
 # Note: ~/.local/share, ~/.local/state, and ~/.local/lib automatically add +1 depth
