@@ -294,6 +294,20 @@ pub fn run_monitor() -> Result<()> {
                 None => return,
             };
 
+            // Check DB early — if we already have a known creator, skip entirely.
+            // This avoids expensive package manager queries for files we've already seen.
+            let path_exists = db.path_exists(&tracked_path);
+            if path_exists && db.path_has_known_creator(&tracked_path) {
+                return;
+            }
+
+            // Also skip early if this is an ignored process and the path is already tracked
+            // (even with unknown creator — ignored procs only update last_accessed)
+            if path_exists && ignored_processes.contains(comm) {
+                return;
+            }
+
+            // Only now do the expensive package resolution
             let mut pkg_info = get_package_for_pid_tree(event.pid, comm, &pm, &package_cache);
 
             if pm.is_self_package(&pkg_info.package) || pkg_info.package == "unknown" {
@@ -307,12 +321,9 @@ pub fn run_monitor() -> Result<()> {
             }
 
             let is_ignored_proc = ignored_processes.contains(&pkg_info.process);
-            let path_exists = db.path_exists(&tracked_path);
-            let has_known_creator = path_exists && db.path_has_known_creator(&tracked_path);
 
-            // Skip if: path exists AND (ignored process OR already has known creator)
-            // This allows "unknown" creator files to be updated when real package accesses them
-            if path_exists && (is_ignored_proc || has_known_creator) {
+            // For parent-resolved ignored processes on existing paths, skip
+            if path_exists && is_ignored_proc {
                 return;
             }
 
