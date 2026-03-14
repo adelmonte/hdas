@@ -195,28 +195,8 @@ impl Config {
 pub fn default_config_content() -> String {
     r#"# HDAS Configuration File
 
-# Directories to monitor
-# Use [[monitored_dirs]] for per-directory depth, or simple strings for global depth
-#
-# Depth controls how much of the path is kept after the monitored dir:
-#   depth=1: ~/.cache/mozilla/firefox/... -> ~/.cache/mozilla
-#   depth=2: ~/.cache/mozilla/firefox/... -> ~/.cache/mozilla/firefox
-#   depth=0: full path, no truncation
-#
-# Use `hdas explain <path>` to see how a path would be tracked.
-
-[[monitored_dirs]]
-path = ".cache"
-
-[[monitored_dirs]]
-path = ".local"
-
-[[monitored_dirs]]
-path = ".config"
-
-# [[monitored_dirs]]
-# path = "/etc/"
-# depth = 0
+# NOTE: In TOML, top-level keys must appear BEFORE any [[array]] sections.
+# Place all settings above the [[monitored_dirs]] entries.
 
 ignored_processes = [
     "nvim", "vim", "vi", "nano", "emacs", "code", "subl", "hx", "kate", "gedit",
@@ -240,6 +220,29 @@ excluded_paths = []
 tracking_depth = 1
 
 auto_prune = true
+
+# Directories to monitor
+# Use [[monitored_dirs]] for per-directory depth, or simple strings for global depth
+#
+# Depth controls how much of the path is kept after the monitored dir:
+#   depth=1: ~/.cache/mozilla/firefox/... -> ~/.cache/mozilla
+#   depth=2: ~/.cache/mozilla/firefox/... -> ~/.cache/mozilla/firefox
+#   depth=0: full path, no truncation
+#
+# Use `hdas explain <path>` to see how a path would be tracked.
+
+[[monitored_dirs]]
+path = ".cache"
+
+[[monitored_dirs]]
+path = ".local"
+
+[[monitored_dirs]]
+path = ".config"
+
+# [[monitored_dirs]]
+# path = "/etc/"
+# depth = 0
 "#
     .to_string()
 }

@@ -122,7 +122,10 @@ hdas clean firefox -f
 # Delete all files from uninstalled packages
 hdas clean-orphans
 
-# Remove database records for files that no longer exist
+# Remove stale database records:
+#   - files that no longer exist on disk
+#   - records under excluded_paths
+#   - records from ignored_packages
 hdas prune
 ```
 
@@ -184,7 +187,39 @@ Output indicators:
 
 Location: `~/.config/hdas/config.toml`
 
+> **Important:** In TOML, all top-level keys must appear *before* any `[[array]]` sections.
+> Place all settings above the `[[monitored_dirs]]` entries.
+
 ```toml
+# Processes that don't overwrite creator attribution
+ignored_processes = [
+    "nvim", "vim", "code",     # editors
+    "cat", "bat", "less",      # pagers
+    "ls", "find", "rg",        # file tools
+    "bash", "zsh", "fish",     # shells
+]
+
+# Packages to skip entirely — events are never recorded, and
+# existing records are retroactively pruned from the database
+ignored_packages = []
+
+# Paths to exclude from monitoring even if under a monitored_dir
+# Existing records under these paths are retroactively pruned
+excluded_paths = [
+    "/etc/ssl/",              # TLS cert reads — very noisy
+    "/etc/ca-certificates/",  # same as above
+]
+
+# Default depth for dirs without explicit depth setting
+# 1 = app dir (e.g., ~/.cache/mozilla)
+# 0 = track full paths (useful for /etc/)
+# Note: ~/.local/share, ~/.local/state, ~/.local/lib automatically add +1 depth
+tracking_depth = 1
+
+# Auto-remove stale records (deleted files, excluded paths,
+# ignored packages) from DB on queries
+auto_prune = true
+
 # Directories to monitor with per-directory depth settings
 #
 # Depth controls how much of the path is kept after the monitored dir:
@@ -206,35 +241,89 @@ path = ".config"
 [[monitored_dirs]]
 path = "/etc/"
 depth = 0  # track full paths
-
-# Processes that don't overwrite creator attribution
-ignored_processes = [
-    "nvim", "vim", "code",     # editors
-    "cat", "bat", "less",      # pagers
-    "ls", "find", "rg",        # file tools
-    "bash", "zsh", "fish",     # shells
-]
-
-# Packages to skip entirely
-ignored_packages = []
-
-# Paths to exclude from monitoring even if under a monitored_dir
-# Useful for high-traffic subdirectories that generate noise (SSL certs,
-# browser caches, build directories, etc.)
-excluded_paths = [
-    "/etc/ssl/",        # TLS cert reads — owned by ca-certificates, very noisy
-    # "/etc/pacman.d/gnupg/",  # GPG keyring reads during package operations
-]
-
-# Default depth for dirs without explicit depth setting
-# 1 = app dir (e.g., ~/.cache/mozilla)
-# 0 = track full paths (useful for /etc/)
-# Note: ~/.local/share, ~/.local/state, ~/.local/lib automatically add +1 depth
-tracking_depth = 1
-
-# Auto-remove deleted files from DB on queries
-auto_prune = true
 ```
+
+## Examples
+
+### Find and clean up after uninstalling a package
+
+```bash
+$ sudo pacman -R discord
+
+$ hdas package discord
+Files created by discord (3 total):
+
+Feb 18 22:11 [✓] /home/user/.cache/discord
+Feb 18 22:11 [✓] /home/user/.config/discord
+Feb 18 22:11 [✓] /home/user/.local/share/discord
+
+$ hdas clean discord
+Will delete 3 file(s), 0 director(ies), 0 symlink(s) [142.8M]:
+  [142.5M] [dir ] /home/user/.cache/discord
+  [ 256.0K] [dir ] /home/user/.config/discord
+  [ 64.0K] [dir ] /home/user/.local/share/discord
+
+Proceed? [y/N]: y
+```
+
+### Bulk-clean all orphaned packages at once
+
+```bash
+$ hdas orphans
+Files from uninstalled packages:
+
+signal-desktop (2 file(s)):
+  /home/user/.config/Signal
+  /home/user/.cache/Signal
+
+telegram-desktop (1 file(s)):
+  /home/user/.config/telegram
+
+$ hdas clean-orphans
+```
+
+### Investigate what a package left behind
+
+```bash
+$ hdas query mozilla
+Found 4 file(s) matching 'mozilla':
+
+Mar 01 14:22 [✓] /home/user/.cache/mozilla
+Mar 01 14:22 [✓] /home/user/.config/mozilla
+Feb 28 09:15 [✗] /home/user/.local/share/mozilla (deleted)
+```
+
+### Scripting with JSON output
+
+```bash
+# Get all orphaned packages as JSON
+hdas orphans --json | jq '.[].package'
+
+# Total size of files from a package
+hdas clean firefox -n --json | jq '.total_size'
+
+# Pipe package file list into other tools
+hdas package steam --json | jq -r '.[].path'
+```
+
+### Silence noisy packages and paths
+
+```toml
+# In ~/.config/hdas/config.toml — place ABOVE [[monitored_dirs]]
+
+# Skip recording events from noisy packages entirely
+ignored_packages = ["electron", "nwjs"]
+
+# Exclude high-traffic paths that clutter the database
+excluded_paths = [
+    "/etc/ssl/",
+    "/etc/ca-certificates/",
+    "/etc/ananicy.d/",
+]
+```
+
+Existing records from ignored packages and excluded paths are automatically
+cleaned up by `hdas prune` or on the next query when `auto_prune = true`.
 
 ## How It Works
 

@@ -26,7 +26,7 @@ Query:
 Cleanup:
   clean          Delete files created by a specific package
   clean-orphans  Delete all files from uninstalled packages
-  prune          Remove stale database records
+  prune          Remove stale records (deleted, excluded, ignored)
 
 Info:
   status         Show service, database, and config at a glance
@@ -95,7 +95,7 @@ enum Commands {
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
-    /// Remove database records for files that no longer exist on disk
+    /// Remove stale records (deleted files, excluded paths, ignored packages)
     Prune,
 
     // ── Info ─────────────────────────────────────────────────

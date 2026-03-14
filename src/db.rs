@@ -227,6 +227,33 @@ impl Database {
         Ok(pruned)
     }
 
+    pub fn prune_excluded(&self, excluded_paths: &[String]) -> Result<Vec<String>> {
+        if excluded_paths.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut stmt = self.conn.prepare("SELECT path FROM files")?;
+        let paths: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        let mut pruned = Vec::new();
+        for path in paths {
+            let dominated = excluded_paths.iter().any(|ex| {
+                let base = ex.trim_end_matches('/');
+                path.starts_with(base)
+                    && (path.len() == base.len() || path[base.len()..].starts_with('/'))
+            });
+            if dominated {
+                self.conn.execute("DELETE FROM files WHERE path = ?1", [&path])?;
+                pruned.push(path);
+            }
+        }
+
+        Ok(pruned)
+    }
+
     pub fn query_file(&self, pattern: &str) -> Result<Vec<FileRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT path,
@@ -353,6 +380,22 @@ impl Database {
         Ok(tracked.into_iter()
             .filter(|p| !installed.contains(p))
             .collect())
+    }
+
+    pub fn prune_ignored_packages(&self, ignored_packages: &[String]) -> Result<usize> {
+        if ignored_packages.is_empty() {
+            return Ok(0);
+        }
+
+        let mut pruned = 0;
+        for pkg in ignored_packages {
+            pruned += self.conn.execute(
+                "DELETE FROM files WHERE created_by_package = ?1",
+                [pkg.as_str()],
+            )?;
+        }
+
+        Ok(pruned)
     }
 
     pub fn delete_file_records(&self, paths: &[String]) -> Result<usize> {

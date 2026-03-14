@@ -464,12 +464,35 @@ pub fn clean_orphans(force: bool, dry_run: bool, json: bool) -> Result<()> {
 
 pub fn prune() -> Result<()> {
     let db = Database::new()?;
+    let config = crate::config::Config::load()?;
+
     let pruned = db.prune_deleted()?;
+    let excluded = db.prune_excluded(&config.excluded_paths)?;
+    let ignored = db.prune_ignored_packages(&config.ignored_packages)?;
+
+    let color = use_color();
 
     if pruned > 0 {
         println!("Pruned {} deleted file(s) from database", pruned);
-    } else {
-        println!("No deleted files to prune");
+    }
+
+    if !excluded.is_empty() {
+        println!("Pruned {} record(s) under excluded paths:", excluded.len());
+        for path in &excluded {
+            if color {
+                println!("  {}", path.dimmed());
+            } else {
+                println!("  {}", path);
+            }
+        }
+    }
+
+    if ignored > 0 {
+        println!("Pruned {} record(s) from ignored packages", ignored);
+    }
+
+    if pruned == 0 && excluded.is_empty() && ignored == 0 {
+        println!("Nothing to prune");
     }
 
     Ok(())

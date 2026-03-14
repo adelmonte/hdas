@@ -96,10 +96,23 @@ fn maybe_prune(db: &crate::db::Database, json: bool) -> Result<usize> {
     let config = Config::load()?;
     if config.auto_prune {
         let pruned = db.prune_deleted()?;
-        if pruned > 0 && !json {
-            eprintln!("(auto-pruned {} deleted file(s))", pruned);
+        let excluded = db.prune_excluded(&config.excluded_paths)?;
+        let ignored = db.prune_ignored_packages(&config.ignored_packages)?;
+        let total = pruned + excluded.len() + ignored;
+        if total > 0 && !json {
+            let mut parts = Vec::new();
+            if pruned > 0 {
+                parts.push(format!("{} deleted file(s)", pruned));
+            }
+            if !excluded.is_empty() {
+                parts.push(format!("{} excluded-path record(s)", excluded.len()));
+            }
+            if ignored > 0 {
+                parts.push(format!("{} ignored-package record(s)", ignored));
+            }
+            eprintln!("(auto-pruned {})", parts.join(", "));
         }
-        Ok(pruned)
+        Ok(total)
     } else {
         Ok(0)
     }
