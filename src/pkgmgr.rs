@@ -206,11 +206,9 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process
 }
 
 fn which(name: &str) -> bool {
-    Command::new("which")
-        .arg(name)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|dir| dir.join(name).exists())
+        })
         .unwrap_or(false)
 }

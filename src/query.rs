@@ -594,20 +594,18 @@ pub fn show_status(json: bool) -> Result<()> {
     let db_size_bytes = db_path.metadata().map(|m| m.len()).unwrap_or(0);
     let db_size = format_size(db_size_bytes);
 
-    // Check service status
-    let username = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
-    let service_name = format!("hdas@{}.service", username);
-    let service_output = std::process::Command::new("systemctl")
-        .args(["is-active", &service_name])
-        .output();
+    // Check if the monitor process is running (init-system agnostic)
+    let monitor_running = std::process::Command::new("pgrep")
+        .args(["-f", "hdas monitor"])
+        .stdout(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
 
-    let (service_active, service_status) = match service_output {
-        Ok(output) => {
-            let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let active = status == "active";
-            (Some(active), status)
-        }
-        Err(_) => (None, "unknown".to_string()),
+    let (service_active, service_status) = if monitor_running {
+        (Some(true), "active".to_string())
+    } else {
+        (Some(false), "inactive".to_string())
     };
 
     let last_event_str = last_event.map(|ts| format_time(ts));
@@ -641,15 +639,15 @@ pub fn show_status(json: bool) -> Result<()> {
     }
 
     // Service
-    print!("Service: {} ", service_name);
+    print!("Monitor: ");
     if color {
         match service_active {
-            Some(true) => println!("({})", "active".green()),
-            Some(false) => println!("({})", service_status.red()),
-            None => println!("({})", "unknown".dimmed()),
+            Some(true) => println!("{}", "running".green()),
+            Some(false) => println!("{}", "not running".red()),
+            None => println!("{}", "unknown".dimmed()),
         }
     } else {
-        println!("({})", service_status);
+        println!("{}", service_status);
     }
 
     // Database
