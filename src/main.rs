@@ -22,6 +22,7 @@ Query:
   dir            Show all tracked files under a directory
   query          Search files by path pattern
   orphans        Show files from packages that are no longer installed
+  recheck        Re-check orphan files and fix misattributions
 
 Cleanup:
   clean          Delete files created by a specific package
@@ -29,8 +30,7 @@ Cleanup:
   prune          Remove stale records (deleted, excluded, ignored)
 
 Info:
-  status         Show service, database, and config at a glance
-  stats          Show detailed database and configuration statistics
+  status         Show monitor, database, and config at a glance
   explain        Show how a path would be tracked (depth truncation)
 
 Admin:
@@ -72,6 +72,8 @@ enum Commands {
     },
     /// Show files from packages that are no longer installed
     Orphans,
+    /// Re-check orphan files against package manager and reassign ownership
+    Recheck,
 
     // ── Cleanup ──────────────────────────────────────────────
 
@@ -100,10 +102,8 @@ enum Commands {
 
     // ── Info ─────────────────────────────────────────────────
 
-    /// Show service, database, and config status at a glance
+    /// Show monitor, database, and config status at a glance
     Status,
-    /// Show database and configuration statistics
-    Stats,
     /// Explain how a path would be tracked (show depth truncation)
     Explain {
         /// Full path to test (e.g. ~/.cache/mozilla/firefox/something)
@@ -159,11 +159,11 @@ fn main() -> Result<()> {
             monitor::run_monitor()?;
         }
         Commands::List => query::list_all(json)?,
-        Commands::Stats => query::show_stats(json)?,
         Commands::Query { pattern } => query::query_file(&pattern, json)?,
         Commands::Package { name } => query::query_package(&name, json)?,
         Commands::Dir { path } => query::query_directory(&path, json)?,
         Commands::Orphans => query::show_orphans(json)?,
+        Commands::Recheck => query::recheck(json)?,
         Commands::Clean { package, force, dry_run } => cleanup::clean_package(&package, force, dry_run, json)?,
         Commands::CleanOrphans { force, dry_run } => cleanup::clean_orphans(force, dry_run, json)?,
         Commands::Prune => cleanup::prune()?,

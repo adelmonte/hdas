@@ -228,6 +228,8 @@ struct OrphanFile {
 
 pub fn show_orphans(json: bool) -> Result<()> {
     let db = crate::db::Database::new()?;
+    // Auto-recheck orphan attributions before displaying
+    recheck_orphans(&db)?;
     let orphans = db.get_orphans()?;
 
     if orphans.is_empty() {
@@ -319,79 +321,6 @@ pub fn list_all(json: bool) -> Result<()> {
     Ok(())
 }
 
-#[derive(Serialize)]
-struct StatsOutput {
-    database_path: String,
-    files_tracked: usize,
-    packages_seen: usize,
-    config_path: String,
-    monitored_dirs: Vec<String>,
-    ignored_processes_count: usize,
-    auto_prune: bool,
-}
-
-pub fn show_stats(json: bool) -> Result<()> {
-    let db = crate::db::Database::new()?;
-    let (files, packages, db_path) = db.get_stats()?;
-    let config = Config::load()?;
-
-    if json {
-        let dirs: Vec<String> = config.monitored_dirs.iter().map(|d| {
-            match d.depth {
-                Some(depth) => format!("{}(depth={})", d.path, depth),
-                None => d.path.clone(),
-            }
-        }).collect();
-        let output = StatsOutput {
-            database_path: db_path,
-            files_tracked: files,
-            packages_seen: packages,
-            config_path: Config::path().to_string_lossy().into_owned(),
-            monitored_dirs: dirs,
-            ignored_processes_count: config.ignored_processes.len(),
-            auto_prune: config.auto_prune,
-        };
-        println!("{}", serde_json::to_string_pretty(&output)?);
-        return Ok(());
-    }
-
-    let color = use_color();
-
-    if color {
-        println!("{}", "HDAS Database Statistics".bold());
-        println!("{}", "========================".bold());
-    } else {
-        println!("HDAS Database Statistics");
-        println!("========================");
-    }
-    println!("Database: {}", db_path);
-    println!("Files tracked: {}", files);
-    println!("Packages seen: {}", packages);
-    println!();
-    if color {
-        println!("{}", "Configuration".bold());
-        println!("{}", "-------------".bold());
-    } else {
-        println!("Configuration");
-        println!("-------------");
-    }
-    println!("Config file: {}", Config::path().display());
-    print!("Monitored dirs: ");
-    for (i, dir) in config.monitored_dirs.iter().enumerate() {
-        if i > 0 {
-            print!(", ");
-        }
-        match dir.depth {
-            Some(d) => print!("{}(depth={})", dir.path, d),
-            None => print!("{}", dir.path),
-        }
-    }
-    println!();
-    println!("Ignored processes: {}", config.ignored_processes.len());
-    println!("Auto-prune: {}", config.auto_prune);
-
-    Ok(())
-}
 
 pub fn show_config() -> Result<()> {
     let path = Config::path();
@@ -580,6 +509,9 @@ struct StatusOutput {
     last_event_timestamp: Option<i64>,
     config_path: String,
     config_exists: bool,
+    monitored_dirs: Vec<String>,
+    ignored_processes_count: usize,
+    auto_prune: bool,
 }
 
 pub fn show_status(json: bool) -> Result<()> {
@@ -588,6 +520,7 @@ pub fn show_status(json: bool) -> Result<()> {
     let last_event = db.get_last_event_time()?;
     let config_path = Config::path();
     let config_exists = config_path.exists();
+    let config = Config::load()?;
 
     // Get DB file size
     let db_path = std::path::Path::new(&db_path_str);
@@ -610,6 +543,13 @@ pub fn show_status(json: bool) -> Result<()> {
 
     let last_event_str = last_event.map(|ts| format_time(ts));
 
+    let dirs: Vec<String> = config.monitored_dirs.iter().map(|d| {
+        match d.depth {
+            Some(depth) => format!("{}(depth={})", d.path, depth),
+            None => d.path.clone(),
+        }
+    }).collect();
+
     if json {
         let output = StatusOutput {
             service_active,
@@ -623,6 +563,9 @@ pub fn show_status(json: bool) -> Result<()> {
             last_event_timestamp: last_event,
             config_path: config_path.to_string_lossy().into_owned(),
             config_exists,
+            monitored_dirs: dirs,
+            ignored_processes_count: config.ignored_processes.len(),
+            auto_prune: config.auto_prune,
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
@@ -638,7 +581,7 @@ pub fn show_status(json: bool) -> Result<()> {
         println!("===========");
     }
 
-    // Service
+    // Monitor
     print!("Monitor: ");
     if color {
         match service_active {
@@ -675,6 +618,10 @@ pub fn show_status(json: bool) -> Result<()> {
             println!("(using defaults)");
         }
     }
+    print!("Monitored dirs: ");
+    println!("{}", dirs.join(", "));
+    println!("Ignored processes: {}", config.ignored_processes.len());
+    println!("Auto-prune: {}", config.auto_prune);
 
     Ok(())
 }
@@ -704,15 +651,22 @@ pub fn explain_path(path: &str, json: bool) -> Result<()> {
         home.join(path).to_string_lossy().into_owned()
     };
 
+    // Normalize: ensure paths like ~/.config get a trailing slash so they match
+    let expanded_norm = if !expanded.ends_with('/') && std::path::Path::new(&expanded).is_dir() {
+        format!("{}/", expanded)
+    } else {
+        expanded.clone()
+    };
+
     let tracked = crate::monitor::get_tracked_path(
-        &expanded,
+        &expanded_norm,
         &home,
         &config.monitored_dirs,
         config.tracking_depth,
     );
 
     // Figure out which dir matched and what depth was used
-    let (matched_dir, depth_used) = find_matching_dir(&expanded, &home, &config);
+    let (matched_dir, depth_used) = find_matching_dir(&expanded_norm, &home, &config);
 
     if json {
         let output = ExplainOutput {
@@ -739,10 +693,10 @@ pub fn explain_path(path: &str, json: bool) -> Result<()> {
             } else {
                 println!("Tracked:  {}", tp);
             }
-            if let Some(ref dir) = find_matching_dir(&expanded, &home, &config).0 {
+            if let Some(ref dir) = matched_dir {
                 println!("Matched:  monitored dir '{}'", dir);
             }
-            if let Some(d) = find_matching_dir(&expanded, &home, &config).1 {
+            if let Some(d) = depth_used {
                 println!("Depth:    {}", d);
             }
         }
@@ -793,4 +747,85 @@ fn find_matching_dir(
     }
 
     (None, None)
+}
+
+/// Re-check orphan files against the package manager and fix misattributions.
+/// Returns (reassigned, removed) counts.
+fn recheck_orphans(db: &crate::db::Database) -> Result<(Vec<(String, String, String)>, usize)> {
+    let pm = crate::pkgmgr::PkgMgr::detect()
+        .ok_or_else(|| anyhow::anyhow!("No supported package manager found"))?;
+
+    let orphans = db.get_orphans()?;
+    if orphans.is_empty() {
+        return Ok((vec![], 0));
+    }
+
+    let records = db.get_files_for_packages(&orphans)?;
+
+    let mut reassigned: Vec<(String, String, String)> = Vec::new();
+    let mut removed = 0usize;
+
+    for record in &records {
+        if let Some(owner) = pm.query_owner(&record.path) {
+            if owner != record.created_by_package {
+                db.reassign_file(&record.path, &owner)?;
+                reassigned.push((record.path.clone(), record.created_by_package.clone(), owner));
+            }
+        } else if !Path::new(&record.path).exists() {
+            db.delete_file_records(&[record.path.clone()])?;
+            removed += 1;
+        }
+    }
+
+    Ok((reassigned, removed))
+}
+
+pub fn recheck(json: bool) -> Result<()> {
+    let db = crate::db::Database::new()?;
+    let (reassigned, removed) = recheck_orphans(&db)?;
+    let color = use_color() && !json;
+
+    if json {
+        #[derive(Serialize)]
+        struct Reassignment {
+            path: String,
+            old_package: String,
+            new_package: String,
+        }
+        let entries: Vec<Reassignment> = reassigned.iter().map(|(p, old, new)| Reassignment {
+            path: p.clone(), old_package: old.clone(), new_package: new.clone(),
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "reassigned": entries.len(),
+            "removed": removed,
+            "details": entries,
+        }))?);
+        return Ok(());
+    }
+
+    if reassigned.is_empty() && removed == 0 {
+        println!("No orphan packages to recheck.");
+        return Ok(());
+    }
+
+    if !reassigned.is_empty() {
+        println!("Reassigned {} file(s):", reassigned.len());
+        for (path, old_pkg, new_pkg) in &reassigned {
+            if color {
+                println!("  {} {} -> {}",
+                    path,
+                    old_pkg.red(),
+                    new_pkg.green(),
+                );
+            } else {
+                println!("  {} {} -> {}", path, old_pkg, new_pkg);
+            }
+        }
+    }
+
+    if removed > 0 {
+        println!("Removed {} stale record(s) (file deleted, package uninstalled).", removed);
+    }
+
+    Ok(())
 }

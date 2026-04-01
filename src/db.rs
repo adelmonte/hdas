@@ -382,6 +382,45 @@ impl Database {
             .collect())
     }
 
+    /// Get all file records for a list of packages (used by recheck).
+    pub fn get_files_for_packages(&self, packages: &[String]) -> Result<Vec<FileRecord>> {
+        if packages.is_empty() {
+            return Ok(vec![]);
+        }
+        let placeholders: Vec<String> = (1..=packages.len()).map(|i| format!("?{}", i)).collect();
+        let sql = format!(
+            "SELECT path,
+                    created_by_package, created_by_process, created_at,
+                    last_accessed_by_package, last_accessed_by_process, last_accessed_at
+             FROM files WHERE created_by_package IN ({})
+             ORDER BY created_by_package, path",
+            placeholders.join(", ")
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> = packages.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+        let records = stmt.query_map(params.as_slice(), |row| {
+            Ok(FileRecord {
+                path: row.get(0)?,
+                created_by_package: row.get(1)?,
+                created_by_process: row.get(2)?,
+                created_at: row.get(3)?,
+                last_accessed_by_package: row.get(4)?,
+                last_accessed_by_process: row.get(5)?,
+                last_accessed_at: row.get(6)?,
+            })
+        })?;
+        records.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Reassign a file's created_by_package to a new owner.
+    pub fn reassign_file(&self, path: &str, new_package: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE files SET created_by_package = ?2 WHERE path = ?1",
+            params![path, new_package],
+        )?;
+        Ok(())
+    }
+
     pub fn prune_ignored_packages(&self, ignored_packages: &[String]) -> Result<usize> {
         if ignored_packages.is_empty() {
             return Ok(0);
