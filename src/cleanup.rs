@@ -37,7 +37,6 @@ struct CleanTarget {
 impl CleanTarget {
     fn from_record(record: FileRecord) -> Option<Self> {
         let path = Path::new(&record.path);
-        // Use symlink_metadata to detect symlinks (including broken ones)
         let meta = match path.symlink_metadata() {
             Ok(m) => m,
             Err(_) => return None,
@@ -71,6 +70,82 @@ fn display_target(target: &CleanTarget) {
         println!("  [{:>6}] [{}] {}", size.dimmed(), type_colored, target.record.path);
     } else {
         println!("  [{:>6}] [{}] {}", size, type_indicator, target.record.path);
+    }
+}
+
+fn confirm_prompt() -> Result<bool> {
+    let color = use_color();
+    if color {
+        print!("{}", "Proceed? [y/N]: ".bold());
+    } else {
+        print!("Proceed? [y/N]: ");
+    }
+    use std::io::{self, BufRead, Write};
+    io::stdout().flush()?;
+    let mut line = String::new();
+    io::stdin().lock().read_line(&mut line)?;
+    let response = line.trim().to_lowercase();
+    Ok(response == "y" || response == "yes")
+}
+
+fn run_deletions<'a>(
+    targets: impl Iterator<Item = &'a CleanTarget>,
+    json: bool,
+) -> (Vec<String>, Vec<CleanError>) {
+    let mut deleted_paths = Vec::new();
+    let mut errors = Vec::new();
+
+    for target in targets {
+        let path = Path::new(&target.record.path);
+        let result = if target.is_symlink {
+            std::fs::remove_file(path)
+        } else if target.is_dir {
+            std::fs::remove_dir_all(path)
+        } else {
+            std::fs::remove_file(path)
+        };
+
+        match result {
+            Ok(_) => {
+                if !json {
+                    if target.is_symlink {
+                        println!("Deleted symlink: {}", target.record.path);
+                    } else {
+                        println!("Deleted: {}", target.record.path);
+                    }
+                }
+                deleted_paths.push(target.record.path.clone());
+            }
+            Err(e) => {
+                if !json {
+                    eprintln!("Error deleting {}: {}", target.record.path, e);
+                }
+                errors.push(CleanError {
+                    path: target.record.path.clone(),
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    (deleted_paths, errors)
+}
+
+fn print_summary(deleted_count: usize, error_count: usize, records_removed: usize) {
+    let color = use_color();
+    println!();
+    if color {
+        let errors_str = if error_count > 0 {
+            error_count.to_string().red().to_string()
+        } else {
+            error_count.to_string()
+        };
+        println!("Summary: {} deleted, {} errors", deleted_count.to_string().green(), errors_str);
+    } else {
+        println!("Summary: {} deleted, {} errors", deleted_count, error_count);
+    }
+    if records_removed > 0 {
+        println!("Removed {} database record(s)", records_removed);
     }
 }
 
@@ -155,7 +230,6 @@ pub fn clean_package(package: &str, force: bool, dry_run: bool, json: bool) -> R
     }
 
     if !json {
-        let color = use_color();
         if dry_run {
             println!("Would delete {} file(s), {} director(ies), {} symlink(s) [{}]:",
                 file_count, dir_count, symlink_count, format_size(total_size));
@@ -173,62 +247,14 @@ pub fn clean_package(package: &str, force: bool, dry_run: bool, json: bool) -> R
             return Ok(());
         }
 
-        if !force {
-            println!();
-            if color {
-                print!("{}", "Proceed? [y/N]: ".bold());
-            } else {
-                print!("Proceed? [y/N]: ");
-            }
-            use std::io::{self, BufRead, Write};
-            io::stdout().flush()?;
-            let mut line = String::new();
-            io::stdin().lock().read_line(&mut line)?;
-
-            let response = line.trim().to_lowercase();
-            if response != "y" && response != "yes" {
-                println!("Aborted.");
-                return Ok(());
-            }
+        println!();
+        if !force && !confirm_prompt()? {
+            println!("Aborted.");
+            return Ok(());
         }
     }
 
-    let mut deleted_paths: Vec<String> = Vec::new();
-    let mut errors: Vec<CleanError> = Vec::new();
-
-    for target in &targets {
-        let path = Path::new(&target.record.path);
-
-        let result = if target.is_symlink {
-            std::fs::remove_file(path)
-        } else if target.is_dir {
-            std::fs::remove_dir_all(path)
-        } else {
-            std::fs::remove_file(path)
-        };
-
-        match result {
-            Ok(_) => {
-                if !json {
-                    if target.is_symlink {
-                        println!("Deleted symlink: {}", target.record.path);
-                    } else {
-                        println!("Deleted: {}", target.record.path);
-                    }
-                }
-                deleted_paths.push(target.record.path.clone());
-            }
-            Err(e) => {
-                if !json {
-                    eprintln!("Error deleting {}: {}", target.record.path, e);
-                }
-                errors.push(CleanError {
-                    path: target.record.path.clone(),
-                    error: e.to_string(),
-                });
-            }
-        }
-    }
+    let (deleted_paths, errors) = run_deletions(targets.iter(), json);
 
     let records_removed = if !deleted_paths.is_empty() {
         db.delete_file_records(&deleted_paths)?
@@ -237,31 +263,13 @@ pub fn clean_package(package: &str, force: bool, dry_run: bool, json: bool) -> R
     };
 
     if json {
-        let result = CleanResult {
+        println!("{}", serde_json::to_string_pretty(&CleanResult {
             deleted: deleted_paths,
             errors,
             records_removed,
-        };
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        })?);
     } else {
-        let color = use_color();
-        println!();
-        if color {
-            println!(
-                "Summary: {} deleted, {} errors",
-                deleted_paths.len().to_string().green(),
-                errors.len().to_string().red()
-            );
-        } else {
-            println!(
-                "Summary: {} deleted, {} errors",
-                deleted_paths.len(),
-                errors.len()
-            );
-        }
-        if records_removed > 0 {
-            println!("Removed {} database record(s)", records_removed);
-        }
+        print_summary(deleted_paths.len(), errors.len(), records_removed);
     }
 
     Ok(())
@@ -342,7 +350,6 @@ pub fn clean_orphans(force: bool, dry_run: bool, json: bool) -> Result<()> {
     }
 
     if !json {
-        let color = use_color();
         if dry_run {
             println!("Would delete {} file(s), {} director(ies), {} symlink(s) from {} orphaned package(s) [{}]:\n",
                 file_count, dir_count, symlink_count, orphan_packages.len(), format_size(total_size));
@@ -368,62 +375,14 @@ pub fn clean_orphans(force: bool, dry_run: bool, json: bool) -> Result<()> {
             return Ok(());
         }
 
-        if !force {
-            println!();
-            if color {
-                print!("{}", "Proceed? [y/N]: ".bold());
-            } else {
-                print!("Proceed? [y/N]: ");
-            }
-            use std::io::{self, BufRead, Write};
-            io::stdout().flush()?;
-            let mut line = String::new();
-            io::stdin().lock().read_line(&mut line)?;
-
-            let response = line.trim().to_lowercase();
-            if response != "y" && response != "yes" {
-                println!("Aborted.");
-                return Ok(());
-            }
+        println!();
+        if !force && !confirm_prompt()? {
+            println!("Aborted.");
+            return Ok(());
         }
     }
 
-    let mut deleted_paths: Vec<String> = Vec::new();
-    let mut errors: Vec<CleanError> = Vec::new();
-
-    for (_, target) in &all_targets {
-        let path = Path::new(&target.record.path);
-
-        let result = if target.is_symlink {
-            std::fs::remove_file(path)
-        } else if target.is_dir {
-            std::fs::remove_dir_all(path)
-        } else {
-            std::fs::remove_file(path)
-        };
-
-        match result {
-            Ok(_) => {
-                if !json {
-                    if target.is_symlink {
-                        println!("Deleted symlink: {}", target.record.path);
-                    } else {
-                        println!("Deleted: {}", target.record.path);
-                    }
-                }
-                deleted_paths.push(target.record.path.clone());
-            }
-            Err(e) => {
-                if !json {
-                    eprintln!("Error deleting {}: {}", target.record.path, e);
-                }
-                errors.push(CleanError {
-                    path: target.record.path.clone(),
-                    error: e.to_string(),
-                });
-            }
-        }
-    }
+    let (deleted_paths, errors) = run_deletions(all_targets.iter().map(|(_, t)| t), json);
 
     let records_removed = if !deleted_paths.is_empty() {
         db.delete_file_records(&deleted_paths)?
@@ -432,31 +391,13 @@ pub fn clean_orphans(force: bool, dry_run: bool, json: bool) -> Result<()> {
     };
 
     if json {
-        let result = CleanResult {
+        println!("{}", serde_json::to_string_pretty(&CleanResult {
             deleted: deleted_paths,
             errors,
             records_removed,
-        };
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        })?);
     } else {
-        let color = use_color();
-        println!();
-        if color {
-            println!(
-                "Summary: {} deleted, {} errors",
-                deleted_paths.len().to_string().green(),
-                errors.len().to_string().red()
-            );
-        } else {
-            println!(
-                "Summary: {} deleted, {} errors",
-                deleted_paths.len(),
-                errors.len()
-            );
-        }
-        if records_removed > 0 {
-            println!("Removed {} database record(s)", records_removed);
-        }
+        print_summary(deleted_paths.len(), errors.len(), records_removed);
     }
 
     Ok(())

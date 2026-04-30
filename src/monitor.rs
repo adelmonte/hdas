@@ -273,16 +273,21 @@ pub fn run_monitor() -> Result<()> {
                 return;
             }
 
+            let home_str = home.to_string_lossy();
             let is_monitored = monitored_dirs.iter().any(|dir| {
                 if dir.path.starts_with('/') {
                     let base = dir.path.trim_end_matches('/');
-                    full_path_str.starts_with(base) && (full_path_str.len() == base.len() || full_path_str[base.len()..].starts_with('/'))
+                    full_path_str.starts_with(base)
+                        && (full_path_str.len() == base.len()
+                            || full_path_str[base.len()..].starts_with('/'))
                 } else {
                     let dir_name = dir.path.trim_start_matches('.');
-                    let pattern1 = format!("/.{}/", dir_name);
-                    let pattern2 = format!(".{}/", dir_name);
-                    full_path_str.contains(&pattern1) || full_path_str.starts_with(&pattern2)
-                        || full_path_str.ends_with(&format!("/.{}", dir_name))
+                    let abs_prefix = format!("{}/.{}/", home_str, dir_name);
+                    let abs_exact = format!("{}/.{}", home_str, dir_name);
+                    let rel_prefix = format!(".{}/", dir_name);
+                    full_path_str.starts_with(&abs_prefix)
+                        || full_path_str.as_ref() == abs_exact.as_str()
+                        || full_path_str.starts_with(&rel_prefix)
                 }
             });
 

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use nix::unistd::User;
 use rusqlite::{Connection, params};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -10,15 +11,10 @@ pub struct Database {
 
 pub fn get_user_info() -> (PathBuf, Option<u32>, Option<u32>) {
     if let Ok(sudo_user) = std::env::var("SUDO_USER") {
-        if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {
-            for line in passwd.lines() {
-                let fields: Vec<&str> = line.split(':').collect();
-                if fields.len() >= 6 && fields[0] == sudo_user {
-                    let uid = fields[2].parse().ok();
-                    let gid = fields[3].parse().ok();
-                    return (PathBuf::from(fields[5]), uid, gid);
-                }
-            }
+        if let Ok(Some(user)) = User::from_name(&sudo_user) {
+            let uid = user.uid.as_raw();
+            let gid = user.gid.as_raw();
+            return (user.dir, Some(uid), Some(gid));
         }
     }
     match dirs::home_dir() {
@@ -80,71 +76,77 @@ impl Database {
     }
 
     fn migrate(conn: &Connection) -> Result<()> {
-        let has_new_schema: bool = conn
-            .prepare("SELECT created_by_package FROM files LIMIT 1")
-            .is_ok();
+        let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
 
-        if has_new_schema {
-            return Ok(());
-        }
+        match version {
+            0 => {
+                // May be: (a) fresh DB, (b) old schema, (c) current schema but never stamped
+                let has_new_schema = conn
+                    .prepare("SELECT created_by_package FROM files LIMIT 1")
+                    .is_ok();
 
-        let old_table_exists: bool = conn
-            .prepare("SELECT path FROM files LIMIT 1")
-            .is_ok();
+                if has_new_schema {
+                    // Already on current schema — just stamp it
+                    conn.execute("PRAGMA user_version = 1", [])?;
+                    return Ok(());
+                }
 
-        if old_table_exists {
-            conn.execute_batch(
-                "
-                CREATE TABLE files_new (
-                    path TEXT PRIMARY KEY,
-                    created_by_package TEXT,
-                    created_by_process TEXT,
-                    created_at INTEGER,
-                    last_accessed_by_package TEXT,
-                    last_accessed_by_process TEXT,
-                    last_accessed_at INTEGER
-                );
+                let old_table_exists = conn
+                    .prepare("SELECT path FROM files LIMIT 1")
+                    .is_ok();
 
-                INSERT INTO files_new (
-                    path,
-                    created_by_package, created_by_process, created_at,
-                    last_accessed_by_package, last_accessed_by_process, last_accessed_at
-                )
-                SELECT
-                    path,
-                    package, process, first_seen,
-                    package, process, last_seen
-                FROM files;
-
-                DROP TABLE files;
-                ALTER TABLE files_new RENAME TO files;
-
-                CREATE INDEX idx_package ON files(created_by_package);
-                CREATE INDEX idx_last_package ON files(last_accessed_by_package);
-                "
-            )?;
-        } else {
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS files (
-                    path TEXT PRIMARY KEY,
-                    created_by_package TEXT,
-                    created_by_process TEXT,
-                    created_at INTEGER,
-                    last_accessed_by_package TEXT,
-                    last_accessed_by_process TEXT,
-                    last_accessed_at INTEGER
-                )",
-                [],
-            )?;
-
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_package ON files(created_by_package)",
-                [],
-            )?;
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_last_package ON files(last_accessed_by_package)",
-                [],
-            )?;
+                if old_table_exists {
+                    conn.execute_batch(
+                        "CREATE TABLE files_new (
+                            path TEXT PRIMARY KEY,
+                            created_by_package TEXT,
+                            created_by_process TEXT,
+                            created_at INTEGER,
+                            last_accessed_by_package TEXT,
+                            last_accessed_by_process TEXT,
+                            last_accessed_at INTEGER
+                        );
+                        INSERT INTO files_new (
+                            path,
+                            created_by_package, created_by_process, created_at,
+                            last_accessed_by_package, last_accessed_by_process, last_accessed_at
+                        )
+                        SELECT
+                            path,
+                            package, process, first_seen,
+                            package, process, last_seen
+                        FROM files;
+                        DROP TABLE files;
+                        ALTER TABLE files_new RENAME TO files;
+                        CREATE INDEX idx_package ON files(created_by_package);
+                        CREATE INDEX idx_last_package ON files(last_accessed_by_package);"
+                    )?;
+                } else {
+                    conn.execute(
+                        "CREATE TABLE IF NOT EXISTS files (
+                            path TEXT PRIMARY KEY,
+                            created_by_package TEXT,
+                            created_by_process TEXT,
+                            created_at INTEGER,
+                            last_accessed_by_package TEXT,
+                            last_accessed_by_process TEXT,
+                            last_accessed_at INTEGER
+                        )",
+                        [],
+                    )?;
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_package ON files(created_by_package)",
+                        [],
+                    )?;
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_last_package ON files(last_accessed_by_package)",
+                        [],
+                    )?;
+                }
+                conn.execute("PRAGMA user_version = 1", [])?;
+            }
+            1 => {} // current version
+            v => return Err(anyhow::anyhow!("Unknown database schema version: {}", v)),
         }
 
         Ok(())
@@ -216,15 +218,24 @@ impl Database {
             .collect::<Result<Vec<_>, _>>()?;
         drop(stmt);
 
-        let mut pruned = 0;
-        for path in paths {
-            if !std::path::Path::new(&path).exists() {
-                self.conn.execute("DELETE FROM files WHERE path = ?1", [&path])?;
-                pruned += 1;
-            }
-        }
+        let to_delete: Vec<String> = paths
+            .into_iter()
+            .filter(|p| !std::path::Path::new(p).exists())
+            .collect();
 
-        Ok(pruned)
+        let count = to_delete.len();
+        self.batch_delete(&to_delete)?;
+        Ok(count)
+    }
+
+    fn batch_delete(&self, paths: &[String]) -> Result<()> {
+        for chunk in paths.chunks(500) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
+            let sql = format!("DELETE FROM files WHERE path IN ({})", placeholders.join(", "));
+            let params: Vec<&dyn rusqlite::ToSql> = chunk.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+            self.conn.prepare(&sql)?.execute(params.as_slice())?;
+        }
+        Ok(())
     }
 
     pub fn prune_excluded(&self, excluded_paths: &[String]) -> Result<Vec<String>> {
@@ -238,19 +249,18 @@ impl Database {
             .collect::<Result<Vec<_>, _>>()?;
         drop(stmt);
 
-        let mut pruned = Vec::new();
-        for path in paths {
-            let dominated = excluded_paths.iter().any(|ex| {
-                let base = ex.trim_end_matches('/');
-                path.starts_with(base)
-                    && (path.len() == base.len() || path[base.len()..].starts_with('/'))
-            });
-            if dominated {
-                self.conn.execute("DELETE FROM files WHERE path = ?1", [&path])?;
-                pruned.push(path);
-            }
-        }
+        let pruned: Vec<String> = paths
+            .into_iter()
+            .filter(|path| {
+                excluded_paths.iter().any(|ex| {
+                    let base = ex.trim_end_matches('/');
+                    path.starts_with(base)
+                        && (path.len() == base.len() || path[base.len()..].starts_with('/'))
+                })
+            })
+            .collect();
 
+        self.batch_delete(&pruned)?;
         Ok(pruned)
     }
 
@@ -425,26 +435,32 @@ impl Database {
         if ignored_packages.is_empty() {
             return Ok(0);
         }
-
-        let mut pruned = 0;
-        for pkg in ignored_packages {
-            pruned += self.conn.execute(
-                "DELETE FROM files WHERE created_by_package = ?1",
-                [pkg.as_str()],
-            )?;
-        }
-
+        let placeholders: Vec<String> = (1..=ignored_packages.len()).map(|i| format!("?{}", i)).collect();
+        let sql = format!("DELETE FROM files WHERE created_by_package IN ({})", placeholders.join(", "));
+        let params: Vec<&dyn rusqlite::ToSql> = ignored_packages.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+        let pruned = self.conn.prepare(&sql)?.execute(params.as_slice())?;
         Ok(pruned)
     }
 
     pub fn delete_file_records(&self, paths: &[String]) -> Result<usize> {
-        let mut deleted = 0;
-        for path in paths {
-            deleted += self.conn.execute(
-                "DELETE FROM files WHERE path = ?1",
-                [path]
-            )?;
+        if paths.is_empty() {
+            return Ok(0);
         }
+        let mut total = 0;
+        for chunk in paths.chunks(500) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
+            let sql = format!("DELETE FROM files WHERE path IN ({})", placeholders.join(", "));
+            let params: Vec<&dyn rusqlite::ToSql> = chunk.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+            total += self.conn.prepare(&sql)?.execute(params.as_slice())?;
+        }
+        Ok(total)
+    }
+
+    pub fn forget_package(&self, package: &str) -> Result<usize> {
+        let deleted = self.conn.execute(
+            "DELETE FROM files WHERE created_by_package = ?1",
+            [package],
+        )?;
         Ok(deleted)
     }
 

@@ -774,10 +774,88 @@ fn recheck_orphans(db: &crate::db::Database) -> Result<(Vec<(String, String, Str
         } else if !Path::new(&record.path).exists() {
             db.delete_file_records(&[record.path.clone()])?;
             removed += 1;
+        } else {
+            // Path still exists but no installed package claims it.
+            // Relabel as "unknown" so it no longer appears as an orphan.
+            db.reassign_file(&record.path, "unknown")?;
+            reassigned.push((record.path.clone(), record.created_by_package.clone(), "unknown".to_string()));
         }
     }
 
     Ok((reassigned, removed))
+}
+
+pub fn forget_package_cmd(package: &str) -> Result<()> {
+    let db = crate::db::Database::new()?;
+    let removed = db.forget_package(package)?;
+    let color = use_color();
+    if removed == 0 {
+        println!("No records found for package: {}", package);
+    } else if color {
+        println!("Removed {} record(s) for {}. Files were not deleted.", removed.to_string().green(), package);
+    } else {
+        println!("Removed {} record(s) for {}. Files were not deleted.", removed, package);
+    }
+    Ok(())
+}
+
+pub fn ignore_package_cmd(package: &str) -> Result<()> {
+    let mut config = crate::config::Config::load()?;
+    let color = use_color();
+
+    if config.ignored_packages.contains(&package.to_string()) {
+        println!("{} is already in ignored_packages.", package);
+    } else {
+        config.ignored_packages.push(package.to_string());
+        config.save()?;
+        if color {
+            println!("Added {} to ignored_packages.", package.cyan());
+        } else {
+            println!("Added {} to ignored_packages.", package);
+        }
+    }
+
+    let db = crate::db::Database::new()?;
+    let pruned = db.prune_ignored_packages(&[package.to_string()])?;
+    if pruned > 0 {
+        println!("Pruned {} existing record(s).", pruned);
+    }
+    Ok(())
+}
+
+pub fn exclude_path_cmd(path: &str) -> Result<()> {
+    let home = crate::db::get_user_home();
+    let expanded = if path.starts_with('/') {
+        path.to_string()
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        home.join(rest).to_string_lossy().into_owned()
+    } else if path == "~" {
+        home.to_string_lossy().into_owned()
+    } else {
+        home.join(path).to_string_lossy().into_owned()
+    };
+
+    let mut config = crate::config::Config::load()?;
+    let color = use_color();
+
+    if config.excluded_paths.contains(&expanded) {
+        println!("{} is already in excluded_paths.", expanded);
+    } else {
+        config.excluded_paths.push(expanded.clone());
+        config.save()?;
+        if color {
+            println!("Added {} to excluded_paths.", expanded.cyan());
+        } else {
+            println!("Added {} to excluded_paths.", expanded);
+        }
+    }
+
+    let db = crate::db::Database::new()?;
+    let pruned = db.prune_excluded(&[expanded])?;
+    if !pruned.is_empty() {
+        println!("Pruned {} existing record(s).", pruned.len());
+    }
+    Ok(())
 }
 
 pub fn recheck(json: bool) -> Result<()> {

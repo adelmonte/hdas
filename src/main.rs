@@ -28,6 +28,7 @@ Cleanup:
   clean          Delete files created by a specific package
   clean-orphans  Delete all files from uninstalled packages
   prune          Remove stale records (deleted, excluded, ignored)
+  forget         Drop database records for a package (no file deletion)
 
 Info:
   status         Show monitor, database, and config at a glance
@@ -36,6 +37,8 @@ Info:
 Admin:
   monitor        Start the eBPF monitor daemon (requires root)
   config         Manage configuration (show, edit, init, validate)
+  ignore         Add a package to ignored_packages and prune its records
+  exclude        Add a path to excluded_paths and prune its records
 
 {options}
 Use \"hdas help <command>\" for more information about a command.
@@ -99,6 +102,11 @@ enum Commands {
     },
     /// Remove stale records (deleted files, excluded paths, ignored packages)
     Prune,
+    /// Drop database records for a package without deleting files or changing config
+    Forget {
+        /// Package name whose records should be removed
+        package: String,
+    },
 
     // ── Info ─────────────────────────────────────────────────
 
@@ -118,6 +126,16 @@ enum Commands {
     Config {
         #[command(subcommand)]
         action: Option<ConfigAction>,
+    },
+    /// Add a package to ignored_packages in config and prune its existing records
+    Ignore {
+        /// Package name to ignore
+        package: String,
+    },
+    /// Add a path to excluded_paths in config and prune its existing records
+    Exclude {
+        /// Path to exclude (absolute, ~/relative, or relative to home)
+        path: String,
     },
 
     // ── Hidden ───────────────────────────────────────────────
@@ -167,6 +185,7 @@ fn main() -> Result<()> {
         Commands::Clean { package, force, dry_run } => cleanup::clean_package(&package, force, dry_run, json)?,
         Commands::CleanOrphans { force, dry_run } => cleanup::clean_orphans(force, dry_run, json)?,
         Commands::Prune => cleanup::prune()?,
+        Commands::Forget { package } => query::forget_package_cmd(&package)?,
         Commands::Config { action } => {
             match action {
                 Some(ConfigAction::Show) | None => query::show_config()?,
@@ -177,6 +196,8 @@ fn main() -> Result<()> {
         }
         Commands::Status => query::show_status(json)?,
         Commands::Explain { path } => query::explain_path(&path, json)?,
+        Commands::Ignore { package } => query::ignore_package_cmd(&package)?,
+        Commands::Exclude { path } => query::exclude_path_cmd(&path)?,
         Commands::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "hdas", &mut std::io::stdout());
         }
