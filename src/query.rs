@@ -228,8 +228,6 @@ struct OrphanFile {
 
 pub fn show_orphans(json: bool) -> Result<()> {
     let db = crate::db::Database::new()?;
-    // Auto-recheck orphan attributions before displaying
-    recheck_orphans(&db)?;
     let orphans = db.get_orphans()?;
 
     if orphans.is_empty() {
