@@ -293,13 +293,20 @@ pub fn clean_orphans(force: bool, dry_run: bool, json: bool) -> Result<()> {
     }
 
     let mut all_targets: Vec<(String, CleanTarget)> = Vec::new();
+    let mut pkg_record_counts: Vec<(String, usize)> = Vec::new();
+    let mut total_orphan_records: usize = 0;
 
     for pkg in &orphan_packages {
         let records = db.query_package(pkg)?;
+        let count = records.len();
         for record in records {
             if let Some(target) = CleanTarget::from_record(record) {
                 all_targets.push((pkg.clone(), target));
             }
+        }
+        if count > 0 {
+            pkg_record_counts.push((pkg.clone(), count));
+            total_orphan_records += count;
         }
     }
 
@@ -315,11 +322,30 @@ pub fn clean_orphans(force: bool, dry_run: bool, json: bool) -> Result<()> {
                 records_removed,
             })?);
         } else {
-            println!("No existing files from orphaned packages.");
+            let color = use_color();
+            if pkg_record_counts.is_empty() {
+                println!("No existing files from orphaned packages.");
+            } else {
+                println!("No existing files to delete — all orphan files already removed from disk:");
+                for (pkg, count) in &pkg_record_counts {
+                    if color {
+                        println!("  {} ({} stale record(s))", pkg.yellow(), count);
+                    } else {
+                        println!("  {} ({} stale record(s))", pkg, count);
+                    }
+                }
+                println!();
+            }
             if !dry_run {
                 let pruned = db.prune_deleted()?;
                 if pruned > 0 {
-                    println!("Pruned {} stale database record(s)", pruned);
+                    let other = pruned.saturating_sub(total_orphan_records.min(pruned));
+                    if total_orphan_records > 0 && other > 0 {
+                        println!("Pruned {} stale record(s): {} orphan + {} from installed packages",
+                            pruned, total_orphan_records.min(pruned), other);
+                    } else {
+                        println!("Pruned {} stale record(s)", pruned);
+                    }
                 }
             }
         }
@@ -390,14 +416,19 @@ pub fn clean_orphans(force: bool, dry_run: bool, json: bool) -> Result<()> {
         0
     };
 
+    let also_pruned = db.prune_deleted()?;
+
     if json {
         println!("{}", serde_json::to_string_pretty(&CleanResult {
             deleted: deleted_paths,
             errors,
-            records_removed,
+            records_removed: records_removed + also_pruned,
         })?);
     } else {
         print_summary(deleted_paths.len(), errors.len(), records_removed);
+        if also_pruned > 0 {
+            println!("Also pruned {} stale record(s) from installed packages", also_pruned);
+        }
     }
 
     Ok(())

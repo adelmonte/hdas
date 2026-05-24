@@ -228,6 +228,7 @@ struct OrphanFile {
 
 pub fn show_orphans(json: bool) -> Result<()> {
     let db = crate::db::Database::new()?;
+    maybe_prune(&db, json)?;
     let orphans = db.get_orphans()?;
 
     if orphans.is_empty() {
@@ -265,11 +266,16 @@ pub fn show_orphans(json: bool) -> Result<()> {
 
     let color = use_color();
     println!("Files from uninstalled packages:\n");
+    let mut all_deleted_pkgs = 0usize;
     for pkg in orphans {
         let records = db.query_package(&pkg)?;
         if !records.is_empty() {
             let existing_count = records.iter().filter(|r| Path::new(&r.path).exists()).count();
             let deleted_count = records.len() - existing_count;
+
+            if existing_count == 0 {
+                all_deleted_pkgs += 1;
+            }
 
             if color {
                 print!("{} ({} file(s)", pkg.yellow(), records.len());
@@ -290,6 +296,18 @@ pub fn show_orphans(json: bool) -> Result<()> {
                 }
             }
             println!();
+        }
+    }
+
+    if all_deleted_pkgs > 0 {
+        let msg = format!(
+            "{} package(s) above have no remaining files on disk — run 'hdas prune' to remove stale records.",
+            all_deleted_pkgs
+        );
+        if color {
+            println!("{}", msg.dimmed());
+        } else {
+            println!("{}", msg);
         }
     }
 
