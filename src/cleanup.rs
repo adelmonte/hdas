@@ -27,6 +27,46 @@ fn get_path_size(path: &Path) -> u64 {
     }
 }
 
+/// Paths that must never be deletion targets: the home directory itself and
+/// every monitored root (e.g. ~/.cache, /etc). A stray database record for
+/// one of these would otherwise let clean/clean-orphans remove it wholesale.
+fn protected_roots() -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    let home = crate::db::get_user_home();
+    let home_str = home.to_string_lossy();
+    let home_str = home_str.trim_end_matches('/');
+    set.insert(home_str.to_string());
+
+    if let Ok(config) = crate::config::Config::load() {
+        for dir in &config.monitored_dirs {
+            let path = if dir.path.starts_with('/') {
+                dir.path.trim_end_matches('/').to_string()
+            } else {
+                format!("{}/{}", home_str, dir.path.trim_matches('/'))
+            };
+            set.insert(path);
+        }
+    }
+    set
+}
+
+fn filter_protected(records: Vec<FileRecord>, json: bool) -> Vec<FileRecord> {
+    let protected = protected_roots();
+    records
+        .into_iter()
+        .filter(|r| {
+            if protected.contains(r.path.trim_end_matches('/')) {
+                if !json {
+                    eprintln!("Refusing to delete monitored root: {}", r.path);
+                }
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
 struct CleanTarget {
     record: FileRecord,
     size: u64,
@@ -182,7 +222,7 @@ struct CleanError {
 
 pub fn clean_package(package: &str, force: bool, dry_run: bool, json: bool) -> Result<()> {
     let db = Database::new()?;
-    let records = db.query_package(package)?;
+    let records = filter_protected(db.query_package(package)?, json);
 
     let targets: Vec<_> = records
         .into_iter()
@@ -297,7 +337,7 @@ pub fn clean_orphans(force: bool, dry_run: bool, json: bool) -> Result<()> {
     let mut total_orphan_records: usize = 0;
 
     for pkg in &orphan_packages {
-        let records = db.query_package(pkg)?;
+        let records = filter_protected(db.query_package(pkg)?, json);
         let count = records.len();
         for record in records {
             if let Some(target) = CleanTarget::from_record(record) {
@@ -434,13 +474,29 @@ pub fn clean_orphans(force: bool, dry_run: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn prune() -> Result<()> {
+#[derive(Serialize)]
+struct PruneResult {
+    deleted_files: usize,
+    excluded_paths: Vec<String>,
+    ignored_packages: usize,
+}
+
+pub fn prune(json: bool) -> Result<()> {
     let db = Database::new()?;
     let config = crate::config::Config::load()?;
 
     let pruned = db.prune_deleted()?;
     let excluded = db.prune_excluded(&config.excluded_paths)?;
     let ignored = db.prune_ignored_packages(&config.ignored_packages)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&PruneResult {
+            deleted_files: pruned,
+            excluded_paths: excluded,
+            ignored_packages: ignored,
+        })?);
+        return Ok(());
+    }
 
     let color = use_color();
 

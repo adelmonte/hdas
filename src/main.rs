@@ -184,8 +184,8 @@ fn main() -> Result<()> {
         Commands::Recheck => query::recheck(json)?,
         Commands::Clean { package, force, dry_run } => cleanup::clean_package(&package, force, dry_run, json)?,
         Commands::CleanOrphans { force, dry_run } => cleanup::clean_orphans(force, dry_run, json)?,
-        Commands::Prune => cleanup::prune()?,
-        Commands::Forget { package } => query::forget_package_cmd(&package)?,
+        Commands::Prune => cleanup::prune(json)?,
+        Commands::Forget { package } => query::forget_package_cmd(&package, json)?,
         Commands::Config { action } => {
             match action {
                 Some(ConfigAction::Show) | None => query::show_config()?,
@@ -196,8 +196,8 @@ fn main() -> Result<()> {
         }
         Commands::Status => query::show_status(json)?,
         Commands::Explain { path } => query::explain_path(&path, json)?,
-        Commands::Ignore { package } => query::ignore_package_cmd(&package)?,
-        Commands::Exclude { path } => query::exclude_path_cmd(&path)?,
+        Commands::Ignore { package } => query::ignore_package_cmd(&package, json)?,
+        Commands::Exclude { path } => query::exclude_path_cmd(&path, json)?,
         Commands::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "hdas", &mut std::io::stdout());
         }

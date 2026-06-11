@@ -3,8 +3,9 @@ use std::fs;
 use std::mem::MaybeUninit;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use libbpf_rs::skel::{SkelBuilder, OpenSkel};
-use libbpf_rs::OpenObject;
+use libbpf_rs::{MapCore, MapFlags, OpenObject};
 
 mod monitor_skel {
     include!(concat!(env!("OUT_DIR"), "/monitor.skel.rs"));
@@ -12,7 +13,14 @@ mod monitor_skel {
 
 use monitor_skel::*;
 
-type PackageCache = RefCell<HashMap<String, Option<String>>>;
+const MAX_PATTERNS: usize = 16;
+const PATTERN_LEN: usize = 64;
+const AT_FDCWD: i32 = -100;
+// Negative lookups are retried after this long, so a package installed while
+// the monitor is running stops resolving as "unknown" without a restart.
+const NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(60);
+
+type PackageCache = RefCell<HashMap<String, (Option<String>, Instant)>>;
 
 fn get_ppid(pid: u32) -> Option<u32> {
     let stat_path = format!("/proc/{}/stat", pid);
@@ -32,13 +40,15 @@ fn get_exe_path(pid: u32) -> Option<String> {
 }
 
 fn query_owner_cached(path: &str, pm: &crate::pkgmgr::PkgMgr, cache: &PackageCache) -> Option<String> {
-    if let Some(cached) = cache.borrow().get(path) {
-        return cached.clone();
+    if let Some((result, at)) = cache.borrow().get(path) {
+        if result.is_some() || at.elapsed() < NEGATIVE_CACHE_TTL {
+            return result.clone();
+        }
     }
 
     let result = pm.query_owner(path);
 
-    cache.borrow_mut().insert(path.to_string(), result.clone());
+    cache.borrow_mut().insert(path.to_string(), (result.clone(), Instant::now()));
     result
 }
 
@@ -106,63 +116,99 @@ pub fn get_tracked_path(
     monitored_dirs: &[crate::config::MonitoredDir],
     default_depth: u32,
 ) -> Option<String> {
+    let full_path = full_path.trim_end_matches('/');
+
     for dir in monitored_dirs {
-        if dir.path.starts_with('/') {
-            let base = dir.path.trim_end_matches('/');
-            if full_path.starts_with(base) && (full_path.len() == base.len() || full_path[base.len()..].starts_with('/')) {
-                let depth = dir.depth.unwrap_or(default_depth);
-                let after_base = full_path.strip_prefix(base).unwrap_or("").trim_start_matches('/');
-                if after_base.is_empty() || depth == 0 {
-                    return Some(full_path.to_string());
-                }
-                let parts: Vec<&str> = after_base.split('/').collect();
-                let tracked_parts: Vec<&str> = parts.iter().take(depth as usize).cloned().collect();
-                if tracked_parts.is_empty() {
-                    return Some(base.to_string());
-                }
-                return Some(format!("{}/{}", base, tracked_parts.join("/")));
-            }
+        if !dir.path.starts_with('/') {
+            continue;
         }
+        let base = dir.path.trim_end_matches('/');
+        let is_under = full_path.len() > base.len()
+            && full_path.starts_with(base)
+            && full_path[base.len()..].starts_with('/');
+        if !is_under {
+            continue;
+        }
+        let depth = dir.depth.unwrap_or(default_depth);
+        if depth == 0 {
+            return Some(full_path.to_string());
+        }
+        let after_base = &full_path[base.len()..];
+        let tracked_parts: Vec<&str> = after_base
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .take(depth as usize)
+            .collect();
+        if tracked_parts.is_empty() {
+            // The monitored root itself — never attribute (or delete) it
+            return None;
+        }
+        return Some(format!("{}/{}", base, tracked_parts.join("/")));
     }
 
     let home_str = home.to_string_lossy();
-    let relative = full_path.strip_prefix(home_str.as_ref())?.trim_start_matches('/');
+    let relative = std::path::Path::new(full_path)
+        .strip_prefix(home)
+        .ok()?
+        .to_string_lossy()
+        .into_owned();
 
     for dir in monitored_dirs {
         if dir.path.starts_with('/') {
             continue;
         }
-        let depth = dir.depth.unwrap_or(default_depth);
-        let dir_name = dir.path.trim_start_matches('.');
-        let prefix = format!(".{}/", dir_name);
-
-        if relative.starts_with(&prefix) {
-            let after_base = relative.strip_prefix(&prefix)?;
-            let parts: Vec<&str> = after_base.split('/').collect();
-
-            if depth == 0 {
-                return Some(format!("{}/{}", home_str, relative.trim_start_matches('.')));
-            }
-
-            let effective_depth = if dir_name == "local" && !parts.is_empty() {
-                let subdir = parts[0];
-                if subdir == "share" || subdir == "state" || subdir == "lib" {
-                    depth + 1
-                } else {
-                    depth
-                }
-            } else {
-                depth
-            };
-
-            let tracked_parts: Vec<&str> = parts.iter().take(effective_depth as usize).cloned().collect();
-            if tracked_parts.is_empty() {
-                return Some(format!("{}/.{}", home_str, dir_name));
-            }
-            return Some(format!("{}/.{}/{}", home_str, dir_name, tracked_parts.join("/")));
+        let base = dir.path.trim_matches('/');
+        let prefix = format!("{}/", base);
+        if !relative.starts_with(&prefix) {
+            continue;
         }
+        let depth = dir.depth.unwrap_or(default_depth);
+        if depth == 0 {
+            return Some(full_path.to_string());
+        }
+        let after_base = &relative[prefix.len()..];
+        let parts: Vec<&str> = after_base.split('/').filter(|s| !s.is_empty()).collect();
+
+        let effective_depth = if base == ".local"
+            && parts.first().is_some_and(|s| matches!(*s, "share" | "state" | "lib"))
+        {
+            depth + 1
+        } else {
+            depth
+        };
+
+        let tracked_parts: Vec<&str> = parts.into_iter().take(effective_depth as usize).collect();
+        if tracked_parts.is_empty() {
+            // The monitored root itself — never attribute (or delete) it
+            return None;
+        }
+        return Some(format!("{}/{}/{}", home_str, base, tracked_parts.join("/")));
     }
     None
+}
+
+/// Build the kernel-side prefix filters from the configured monitored dirs.
+/// Home-relative dirs get two patterns: the absolute form (for absolute
+/// opens) and the bare relative form (for cwd-relative opens). The match is
+/// only a coarse prefix filter — precise filtering happens in userspace.
+fn build_kernel_patterns(home: &std::path::Path, monitored_dirs: &[crate::config::MonitoredDir]) -> Vec<String> {
+    let home_str = home.to_string_lossy();
+    let home_str = home_str.trim_end_matches('/');
+    let mut patterns = Vec::new();
+
+    for dir in monitored_dirs {
+        if dir.path.starts_with('/') {
+            patterns.push(dir.path.trim_end_matches('/').to_string());
+        } else {
+            let base = dir.path.trim_matches('/');
+            patterns.push(format!("{}/{}", home_str, base));
+            patterns.push(base.to_string());
+        }
+    }
+
+    patterns.sort();
+    patterns.dedup();
+    patterns
 }
 
 pub fn run_monitor() -> Result<()> {
@@ -195,13 +241,36 @@ pub fn run_monitor() -> Result<()> {
     let open_skel = skel_builder.open(&mut open_object)?;
     let skel = open_skel.load()?;
 
+    let db = crate::db::Database::new()?;
+    let home = crate::db::get_user_home();
+
+    // Populate the kernel prefix filter before attaching, so no events
+    // arrive while the map is empty.
+    let patterns = build_kernel_patterns(&home, &config.monitored_dirs);
+    if patterns.len() > MAX_PATTERNS {
+        eprintln!(
+            "Warning: more than {} kernel filter patterns; these monitored dirs will not be captured: {:?}",
+            MAX_PATTERNS,
+            &patterns[MAX_PATTERNS..]
+        );
+    }
+    for (i, pattern) in patterns.iter().take(MAX_PATTERNS).enumerate() {
+        let mut value = [0u8; PATTERN_LEN];
+        let bytes = pattern.as_bytes();
+        // Truncation keeps a valid (just less selective) prefix filter
+        let n = bytes.len().min(PATTERN_LEN - 1);
+        value[..n].copy_from_slice(&bytes[..n]);
+        skel.maps.patterns.update(&(i as u32).to_ne_bytes(), &value, MapFlags::ANY)?;
+    }
+
     let _link_openat = skel
         .progs
         .trace_openat
         .attach_tracepoint("syscalls", "sys_enter_openat")?;
-
-    let db = crate::db::Database::new()?;
-    let home = crate::db::get_user_home();
+    let _link_openat2 = skel
+        .progs
+        .trace_openat2
+        .attach_tracepoint("syscalls", "sys_enter_openat2")?;
 
     println!("Monitor running. Press Ctrl+C to stop.");
     println!();
@@ -234,33 +303,28 @@ pub fn run_monitor() -> Result<()> {
             if event.pid == monitor_pid {
                 return;
             }
-            let mut ancestor = event.pid;
-            for _ in 0..5 {
-                match get_ppid(ancestor) {
-                    Some(p) if p > 1 => {
-                        if p == monitor_pid {
-                            return;
-                        }
-                        ancestor = p;
-                    }
-                    _ => break,
-                }
-            }
 
-            let comm = std::str::from_utf8(&event.comm)
-                .unwrap_or("unknown")
-                .trim_end_matches('\0');
+            let comm_len = event.comm.iter().position(|&b| b == 0).unwrap_or(event.comm.len());
+            let comm = std::str::from_utf8(&event.comm[..comm_len]).unwrap_or("unknown");
 
-            let filename = std::str::from_utf8(&event.filename)
-                .unwrap_or("unknown")
-                .trim_end_matches('\0');
+            let name_len = event.filename.iter().position(|&b| b == 0).unwrap_or(event.filename.len());
+            let filename = match std::str::from_utf8(&event.filename[..name_len]) {
+                Ok(f) if !f.is_empty() => f,
+                _ => return,
+            };
 
             let full_path = if filename.starts_with('/') {
                 std::path::PathBuf::from(filename)
             } else {
-                let mut p = home.clone();
-                p.push(filename);
-                p
+                // Resolve relative opens against the process's actual cwd;
+                // dirfd-relative opens can't be resolved, so drop them.
+                if event.dfd != AT_FDCWD {
+                    return;
+                }
+                match fs::read_link(format!("/proc/{}/cwd", event.pid)) {
+                    Ok(cwd) => cwd.join(filename),
+                    Err(_) => return,
+                }
             };
 
             let full_path_str = full_path.to_string_lossy();
@@ -273,27 +337,6 @@ pub fn run_monitor() -> Result<()> {
                 return;
             }
 
-            let home_str = home.to_string_lossy();
-            let is_monitored = monitored_dirs.iter().any(|dir| {
-                if dir.path.starts_with('/') {
-                    let base = dir.path.trim_end_matches('/');
-                    full_path_str.starts_with(base)
-                        && (full_path_str.len() == base.len()
-                            || full_path_str[base.len()..].starts_with('/'))
-                } else {
-                    let dir_name = dir.path.trim_start_matches('.');
-                    let abs_prefix = format!("{}/.{}/", home_str, dir_name);
-                    let abs_exact = format!("{}/.{}", home_str, dir_name);
-                    let rel_prefix = format!(".{}/", dir_name);
-                    full_path_str.starts_with(&abs_prefix)
-                        || full_path_str.as_ref() == abs_exact.as_str()
-                        || full_path_str.starts_with(&rel_prefix)
-                }
-            });
-
-            if !is_monitored {
-                return;
-            }
             let tracked_path = match get_tracked_path(&full_path_str, &home, &monitored_dirs, tracking_depth) {
                 Some(p) => p,
                 None => return,
@@ -310,6 +353,22 @@ pub fn run_monitor() -> Result<()> {
             // (even with unknown creator — ignored procs only update last_accessed)
             if path_exists && ignored_processes.contains(comm) {
                 return;
+            }
+
+            // Skip events from our own descendants (package manager queries we
+            // spawn open files under /etc). Checked only after path filtering
+            // since it costs up to 5 /proc reads.
+            let mut ancestor = event.pid;
+            for _ in 0..5 {
+                match get_ppid(ancestor) {
+                    Some(p) if p > 1 => {
+                        if p == monitor_pid {
+                            return;
+                        }
+                        ancestor = p;
+                    }
+                    _ => break,
+                }
             }
 
             // Only now do the expensive package resolution
@@ -363,16 +422,119 @@ pub fn run_monitor() -> Result<()> {
                 tracked_path
             );
         })
+        .lost_cb(|cpu, count| {
+            eprintln!("Warning: lost {} event(s) on CPU {}", count, cpu);
+        })
         .build()?;
 
     loop {
-        perf.poll(std::time::Duration::from_millis(100))?;
+        match perf.poll(std::time::Duration::from_millis(100)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == libbpf_rs::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e.into()),
+        }
     }
 }
 
 #[repr(C)]
 struct Event {
     pid: u32,
+    dfd: i32,
     comm: [u8; 16],
     filename: [u8; 256],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_tracked_path;
+    use crate::config::MonitoredDir;
+    use std::path::Path;
+
+    fn dirs(spec: &[(&str, Option<u32>)]) -> Vec<MonitoredDir> {
+        spec.iter()
+            .map(|(p, d)| MonitoredDir { path: p.to_string(), depth: *d })
+            .collect()
+    }
+
+    #[test]
+    fn depth_truncates_to_app_dir() {
+        let home = Path::new("/home/u");
+        let d = dirs(&[(".cache", None)]);
+        assert_eq!(
+            get_tracked_path("/home/u/.cache/mozilla/firefox/x", home, &d, 1),
+            Some("/home/u/.cache/mozilla".to_string())
+        );
+    }
+
+    #[test]
+    fn depth_zero_keeps_leading_dot() {
+        let home = Path::new("/home/u");
+        let d = dirs(&[(".cache", Some(0))]);
+        assert_eq!(
+            get_tracked_path("/home/u/.cache/mozilla/firefox/x", home, &d, 1),
+            Some("/home/u/.cache/mozilla/firefox/x".to_string())
+        );
+    }
+
+    #[test]
+    fn monitored_root_itself_is_not_tracked() {
+        let home = Path::new("/home/u");
+        let d = dirs(&[(".cache", None)]);
+        assert_eq!(get_tracked_path("/home/u/.cache/", home, &d, 1), None);
+        assert_eq!(get_tracked_path("/home/u/.cache", home, &d, 1), None);
+    }
+
+    #[test]
+    fn local_share_gets_extra_depth() {
+        let home = Path::new("/home/u");
+        let d = dirs(&[(".local", None)]);
+        assert_eq!(
+            get_tracked_path("/home/u/.local/share/app/data/f", home, &d, 1),
+            Some("/home/u/.local/share/app".to_string())
+        );
+        assert_eq!(
+            get_tracked_path("/home/u/.local/bin/tool", home, &d, 1),
+            Some("/home/u/.local/bin".to_string())
+        );
+    }
+
+    #[test]
+    fn absolute_dir_tracking() {
+        let home = Path::new("/home/u");
+        let d = dirs(&[("/etc/", Some(0))]);
+        assert_eq!(
+            get_tracked_path("/etc/pacman.conf", home, &d, 1),
+            Some("/etc/pacman.conf".to_string())
+        );
+        // The root itself and lookalike prefixes don't match
+        assert_eq!(get_tracked_path("/etc/", home, &d, 1), None);
+        assert_eq!(get_tracked_path("/etcetera/x", home, &d, 1), None);
+    }
+
+    #[test]
+    fn absolute_dir_depth_truncation() {
+        let home = Path::new("/home/u");
+        let d = dirs(&[("/etc/", Some(1))]);
+        assert_eq!(
+            get_tracked_path("/etc/ssl/certs/ca.pem", home, &d, 1),
+            Some("/etc/ssl".to_string())
+        );
+    }
+
+    #[test]
+    fn non_dot_home_dir() {
+        let home = Path::new("/home/u");
+        let d = dirs(&[("Downloads", None)]);
+        assert_eq!(
+            get_tracked_path("/home/u/Downloads/app/file", home, &d, 1),
+            Some("/home/u/Downloads/app".to_string())
+        );
+    }
+
+    #[test]
+    fn other_users_home_does_not_match() {
+        let home = Path::new("/home/u");
+        let d = dirs(&[(".cache", None)]);
+        assert_eq!(get_tracked_path("/home/u2/.cache/foo/x", home, &d, 1), None);
+    }
 }

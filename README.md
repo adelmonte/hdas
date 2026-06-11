@@ -10,7 +10,7 @@ Linux applications scatter files across `~/.cache`, `~/.local`, `~/.config`, `/e
 
 ## The Solution
 
-HDAS attaches an eBPF program to the kernel's `openat` syscall to trace file operations in real-time with minimal overhead. Each file access is resolved to its originating package through process tree walking and package manager queries. The result is a database mapping every tracked file to the package that created it — queryable, cleanable, and exportable as JSON.
+HDAS attaches eBPF programs to the kernel's `openat` and `openat2` syscalls to trace file operations in real-time with minimal overhead. Each file access is resolved to its originating package through process tree walking and package manager queries. The result is a database mapping every tracked file to the package that created it — queryable, cleanable, and exportable as JSON.
 
 ## Features
 
@@ -329,12 +329,14 @@ cleaned up by `hdas prune` or on the next query when `auto_prune = true`.
 
 ### eBPF monitoring
 
-HDAS attaches an eBPF program to the kernel's `sys_enter_openat` tracepoint. This captures every file open operation system-wide with minimal overhead.
+HDAS attaches eBPF programs to the kernel's `sys_enter_openat` and `sys_enter_openat2` tracepoints. This captures every file open operation system-wide with minimal overhead.
 
 The eBPF program runs in kernel space and:
-1. Captures the PID, process name, and filename for each `openat()` syscall
-2. Performs initial path filtering in-kernel for configured directories
+1. Captures the PID, process name, and filename for each open syscall
+2. Performs initial path filtering in-kernel using prefix patterns built from your configured `monitored_dirs` (loaded into a BPF map at startup)
 3. Sends matching events to userspace via a perf ring buffer
+
+Relative paths are resolved against the opening process's working directory (via `/proc/<pid>/cwd`) before any attribution happens.
 
 ### Package resolution
 

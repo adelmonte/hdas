@@ -64,6 +64,9 @@ impl Database {
 
         let db_path = db_dir.join("attributions.db");
         let conn = Connection::open(&db_path)?;
+        // The monitor (root) and CLI invocations write concurrently; without
+        // a busy timeout, contention surfaces as immediate SQLITE_BUSY errors.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         Self::migrate(&conn)?;
 
         if let (Some(uid), Some(gid)) = (uid, gid) {

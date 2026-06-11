@@ -512,6 +512,38 @@ pub fn validate_config(json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Look for a process whose argv is `hdas monitor` by scanning /proc.
+/// Deliberately exact (not a substring match) so unrelated command lines
+/// like `vim hdas-monitor-notes` don't count.
+fn monitor_process_running() -> bool {
+    let my_pid = std::process::id();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        if pid == my_pid {
+            continue;
+        }
+        let Ok(cmdline) = std::fs::read(format!("/proc/{}/cmdline", pid)) else {
+            continue;
+        };
+        let mut args = cmdline.split(|&b| b == 0).filter(|s| !s.is_empty());
+        let (Some(arg0), Some(arg1)) = (args.next(), args.next()) else {
+            continue;
+        };
+        let arg0 = String::from_utf8_lossy(arg0);
+        let exe_name = arg0.rsplit('/').next().unwrap_or(&arg0);
+        if exe_name == "hdas" && arg1 == b"monitor" {
+            return true;
+        }
+    }
+    false
+}
+
 #[derive(Serialize)]
 struct StatusOutput {
     service_active: Option<bool>,
@@ -544,12 +576,7 @@ pub fn show_status(json: bool) -> Result<()> {
     let db_size = format_size(db_size_bytes);
 
     // Check if the monitor process is running (init-system agnostic)
-    let monitor_running = std::process::Command::new("pgrep")
-        .args(["-f", "hdas monitor"])
-        .stdout(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let monitor_running = monitor_process_running();
 
     let (service_active, service_status) = if monitor_running {
         (Some(true), "active".to_string())
@@ -753,8 +780,8 @@ fn find_matching_dir(
             if dir.path.starts_with('/') {
                 continue;
             }
-            let dir_name = dir.path.trim_start_matches('.');
-            let prefix = format!(".{}/", dir_name);
+            let base = dir.path.trim_matches('/');
+            let prefix = format!("{}/", base);
             if relative.starts_with(&prefix) {
                 let depth = dir.depth.unwrap_or(config.tracking_depth);
                 return (Some(dir.path.clone()), Some(depth));
@@ -782,14 +809,17 @@ fn recheck_orphans(db: &crate::db::Database) -> Result<(Vec<(String, String, Str
     let mut removed = 0usize;
 
     for record in &records {
+        // Check existence first — it's free, while query_owner spawns a process
+        if !Path::new(&record.path).exists() {
+            db.delete_file_records(&[record.path.clone()])?;
+            removed += 1;
+            continue;
+        }
         if let Some(owner) = pm.query_owner(&record.path) {
             if owner != record.created_by_package {
                 db.reassign_file(&record.path, &owner)?;
                 reassigned.push((record.path.clone(), record.created_by_package.clone(), owner));
             }
-        } else if !Path::new(&record.path).exists() {
-            db.delete_file_records(&[record.path.clone()])?;
-            removed += 1;
         } else {
             // Path still exists but no installed package claims it.
             // Relabel as "unknown" so it no longer appears as an orphan.
@@ -801,9 +831,18 @@ fn recheck_orphans(db: &crate::db::Database) -> Result<(Vec<(String, String, Str
     Ok((reassigned, removed))
 }
 
-pub fn forget_package_cmd(package: &str) -> Result<()> {
+pub fn forget_package_cmd(package: &str, json: bool) -> Result<()> {
     let db = crate::db::Database::new()?;
     let removed = db.forget_package(package)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "package": package,
+            "records_removed": removed,
+        }))?);
+        return Ok(());
+    }
+
     let color = use_color();
     if removed == 0 {
         println!("No records found for package: {}", package);
@@ -815,31 +854,36 @@ pub fn forget_package_cmd(package: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn ignore_package_cmd(package: &str) -> Result<()> {
-    let mut config = crate::config::Config::load()?;
-    let color = use_color();
-
-    if config.ignored_packages.contains(&package.to_string()) {
-        println!("{} is already in ignored_packages.", package);
-    } else {
-        config.ignored_packages.push(package.to_string());
-        config.save()?;
-        if color {
-            println!("Added {} to ignored_packages.", package.cyan());
-        } else {
-            println!("Added {} to ignored_packages.", package);
-        }
-    }
+pub fn ignore_package_cmd(package: &str, json: bool) -> Result<()> {
+    let added = crate::config::Config::add_to_array("ignored_packages", package)?;
 
     let db = crate::db::Database::new()?;
     let pruned = db.prune_ignored_packages(&[package.to_string()])?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "package": package,
+            "added": added,
+            "records_pruned": pruned,
+        }))?);
+        return Ok(());
+    }
+
+    let color = use_color();
+    if !added {
+        println!("{} is already in ignored_packages.", package);
+    } else if color {
+        println!("Added {} to ignored_packages.", package.cyan());
+    } else {
+        println!("Added {} to ignored_packages.", package);
+    }
     if pruned > 0 {
         println!("Pruned {} existing record(s).", pruned);
     }
     Ok(())
 }
 
-pub fn exclude_path_cmd(path: &str) -> Result<()> {
+pub fn exclude_path_cmd(path: &str, json: bool) -> Result<()> {
     let home = crate::db::get_user_home();
     let expanded = if path.starts_with('/') {
         path.to_string()
@@ -851,23 +895,28 @@ pub fn exclude_path_cmd(path: &str) -> Result<()> {
         home.join(path).to_string_lossy().into_owned()
     };
 
-    let mut config = crate::config::Config::load()?;
-    let color = use_color();
-
-    if config.excluded_paths.contains(&expanded) {
-        println!("{} is already in excluded_paths.", expanded);
-    } else {
-        config.excluded_paths.push(expanded.clone());
-        config.save()?;
-        if color {
-            println!("Added {} to excluded_paths.", expanded.cyan());
-        } else {
-            println!("Added {} to excluded_paths.", expanded);
-        }
-    }
+    let added = crate::config::Config::add_to_array("excluded_paths", &expanded)?;
 
     let db = crate::db::Database::new()?;
-    let pruned = db.prune_excluded(&[expanded])?;
+    let pruned = db.prune_excluded(&[expanded.clone()])?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "path": expanded,
+            "added": added,
+            "records_pruned": pruned.len(),
+        }))?);
+        return Ok(());
+    }
+
+    let color = use_color();
+    if !added {
+        println!("{} is already in excluded_paths.", expanded);
+    } else if color {
+        println!("Added {} to excluded_paths.", expanded.cyan());
+    } else {
+        println!("Added {} to excluded_paths.", expanded);
+    }
     if !pruned.is_empty() {
         println!("Pruned {} existing record(s).", pruned.len());
     }

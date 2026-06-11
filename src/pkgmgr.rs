@@ -49,16 +49,19 @@ impl PkgMgr {
     /// List every installed package name.
     pub fn list_installed(&self) -> Result<HashSet<String>, std::io::Error> {
         let output = match self {
-            Self::Pacman => Command::new("pacman").args(["-Qq"]).output()?,
+            Self::Pacman => Command::new("pacman").args(["-Qq"]).env("LC_ALL", "C").output()?,
             Self::Dpkg   => Command::new("dpkg-query")
                 .args(["-W", "-f", "${Package}\\n"])
+                .env("LC_ALL", "C")
                 .output()?,
             Self::Rpm => Command::new("rpm")
                 .args(["-qa", "--qf", "%{NAME}\\n"])
+                .env("LC_ALL", "C")
                 .output()?,
-            Self::Xbps => Command::new("xbps-query").arg("-l").output()?,
+            Self::Xbps => Command::new("xbps-query").arg("-l").env("LC_ALL", "C").output()?,
             Self::Apk => Command::new("apk")
                 .args(["list", "--installed", "-q"])
+                .env("LC_ALL", "C")
                 .output()?,
         };
 
@@ -105,17 +108,20 @@ impl PkgMgr {
         match self {
             Self::Pacman => {
                 let output = run_with_timeout(
-                    Command::new("pacman").args(["-Qo", path]),
+                    Command::new("pacman").args(["-Qo", path]).env("LC_ALL", "C"),
                     TIMEOUT,
                 )?;
                 if !output.status.success() { return None; }
                 let text = String::from_utf8_lossy(&output.stdout);
-                // "/<path> is owned by <package> <version>"
-                text.split_whitespace().nth(4).map(|s| s.to_string())
+                // "/<path> is owned by <package> <version>" — count from the
+                // end so paths containing spaces don't shift the fields
+                let mut fields = text.split_whitespace().rev();
+                let _version = fields.next();
+                fields.next().map(|s| s.to_string())
             }
             Self::Dpkg => {
                 let output = run_with_timeout(
-                    Command::new("dpkg").args(["-S", path]),
+                    Command::new("dpkg").args(["-S", path]).env("LC_ALL", "C"),
                     TIMEOUT,
                 )?;
                 if !output.status.success() { return None; }
@@ -127,7 +133,7 @@ impl PkgMgr {
             }
             Self::Rpm => {
                 let output = run_with_timeout(
-                    Command::new("rpm").args(["-qf", "--qf", "%{NAME}", path]),
+                    Command::new("rpm").args(["-qf", "--qf", "%{NAME}", path]).env("LC_ALL", "C"),
                     TIMEOUT,
                 )?;
                 if !output.status.success() { return None; }
@@ -136,7 +142,7 @@ impl PkgMgr {
             }
             Self::Xbps => {
                 let output = run_with_timeout(
-                    Command::new("xbps-query").args(["-o", path]),
+                    Command::new("xbps-query").args(["-o", path]).env("LC_ALL", "C"),
                     TIMEOUT,
                 )?;
                 if !output.status.success() { return None; }
@@ -150,7 +156,7 @@ impl PkgMgr {
             }
             Self::Apk => {
                 let output = run_with_timeout(
-                    Command::new("apk").args(["info", "--who-owns", path]),
+                    Command::new("apk").args(["info", "--who-owns", path]).env("LC_ALL", "C"),
                     TIMEOUT,
                 )?;
                 if !output.status.success() { return None; }
@@ -206,9 +212,15 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process
 }
 
 fn which(name: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
     std::env::var_os("PATH")
         .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| dir.join(name).exists())
+            std::env::split_paths(&paths).any(|dir| {
+                dir.join(name)
+                    .metadata()
+                    .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false)
+            })
         })
         .unwrap_or(false)
 }

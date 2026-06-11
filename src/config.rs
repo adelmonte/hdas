@@ -1,5 +1,5 @@
 use anyhow::Result;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -17,43 +17,34 @@ impl MonitoredDir {
     }
 }
 
-impl Serialize for MonitoredDir {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        use serde::ser::SerializeMap;
-        if self.depth.is_some() {
-            let mut map = serializer.serialize_map(Some(2))?;
-            map.serialize_entry("path", &self.path)?;
-            map.serialize_entry("depth", &self.depth)?;
-            map.end()
-        } else {
-            serializer.serialize_str(&self.path)
-        }
-    }
-}
-
 impl<'de> Deserialize<'de> for MonitoredDir {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct FullDir {
+            path: String,
+            depth: Option<u32>,
+        }
+
+        #[derive(Deserialize)]
         #[serde(untagged)]
         enum MonitoredDirHelper {
             Simple(String),
-            Full { path: String, depth: Option<u32> },
+            Full(FullDir),
         }
 
         match MonitoredDirHelper::deserialize(deserializer)? {
             MonitoredDirHelper::Simple(path) => Ok(MonitoredDir { path, depth: None }),
-            MonitoredDirHelper::Full { path, depth } => Ok(MonitoredDir { path, depth }),
+            MonitoredDirHelper::Full(full) => Ok(MonitoredDir { path: full.path, depth: full.depth }),
         }
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default = "default_monitored_dirs")]
     pub monitored_dirs: Vec<MonitoredDir>,
@@ -162,33 +153,64 @@ impl Config {
         }
     }
 
-    pub fn save(&self) -> Result<()> {
+    pub fn ensure_exists() -> Result<()> {
         let path = Self::path();
+        if path.exists() {
+            return Ok(());
+        }
 
+        let (_, uid, gid) = crate::db::get_user_info();
         if let Some(parent) = path.parent() {
-            let (_, uid, gid) = crate::db::get_user_info();
             crate::db::create_dir_all_with_owner(parent, uid, gid)?;
         }
 
-        let content = toml::to_string_pretty(self)?;
-        std::fs::write(&path, content)?;
-
-        let (_, uid, gid) = crate::db::get_user_info();
-        if let (Some(u), Some(g)) = (uid, gid) {
-            if let Err(e) = std::os::unix::fs::chown(&path, Some(u), Some(g)) {
-                eprintln!("Warning: failed to chown {}: {}", path.display(), e);
-            }
-        }
-
+        std::fs::write(&path, default_config_content())?;
+        chown_to_user(&path, uid, gid);
         Ok(())
     }
 
-    pub fn ensure_exists() -> Result<()> {
+    /// Append a string value to a top-level array key, editing the config
+    /// file in place so comments and formatting are preserved.
+    /// Returns false if the value was already present.
+    pub fn add_to_array(key: &str, value: &str) -> Result<bool> {
+        Self::ensure_exists()?;
         let path = Self::path();
-        if !path.exists() {
-            Config::default().save()?;
+        let mut content = std::fs::read_to_string(&path)?;
+
+        let mut doc: toml_edit::DocumentMut = content
+            .parse()
+            .map_err(|e| anyhow::anyhow!("cannot edit {}: {}", path.display(), e))?;
+
+        if doc.get(key).is_none() {
+            // Top-level keys must precede [[monitored_dirs]] sections,
+            // so insert the new key at the very top of the file
+            content = format!("{} = []\n{}", key, content);
+            doc = content
+                .parse()
+                .map_err(|e| anyhow::anyhow!("cannot edit {}: {}", path.display(), e))?;
         }
-        Ok(())
+
+        let arr = doc[key]
+            .as_array_mut()
+            .ok_or_else(|| anyhow::anyhow!("config key '{}' is not an array", key))?;
+
+        if arr.iter().any(|v| v.as_str() == Some(value)) {
+            return Ok(false);
+        }
+        arr.push(value);
+
+        std::fs::write(&path, doc.to_string())?;
+        let (_, uid, gid) = crate::db::get_user_info();
+        chown_to_user(&path, uid, gid);
+        Ok(true)
+    }
+}
+
+fn chown_to_user(path: &std::path::Path, uid: Option<u32>, gid: Option<u32>) {
+    if let (Some(u), Some(g)) = (uid, gid) {
+        if let Err(e) = std::os::unix::fs::chown(path, Some(u), Some(g)) {
+            eprintln!("Warning: failed to chown {}: {}", path.display(), e);
+        }
     }
 }
 

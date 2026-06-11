@@ -5,6 +5,9 @@ After=local-fs.target
 
 [Service]
 Type=simple
+# The data dir must exist before the sandbox below can bind it read-write;
+# the "+" prefix runs this outside the sandbox so first start works.
+ExecStartPre=+/bin/sh -c 'install -d -o %i -g "$(id -gn %i)" /home/%i/.local/share/hdas'
 ExecStart=/usr/bin/hdas monitor
 Environment="SUDO_USER=%i"
 Restart=on-failure
@@ -14,7 +17,7 @@ RestartSec=5
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/%i/.local/share/hdas
+ReadWritePaths=-/home/%i/.local/share/hdas
 
 [Install]
 WantedBy=multi-user.target
