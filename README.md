@@ -204,7 +204,13 @@ ignored_processes = [
 ignored_packages = []
 
 # Paths to exclude from monitoring even if under a monitored_dir
-# Existing records under these paths are retroactively pruned
+# Existing records under these paths are retroactively pruned.
+# New configs are seeded with shared infrastructure dirs (no single
+# package owns them, so attributing — and cleaning — them is wrong):
+#   ~/.config/kdedefaults, ~/.config/dconf, ~/.config/pulse,
+#   ~/.cache/fontconfig, ~/.cache/mesa_shader_cache,
+#   ~/.cache/mesa_shader_cache_db, ~/.cache/thumbnails
+# Edit freely; add your own (e.g. noisy cert reads):
 excluded_paths = [
     "/etc/ssl/",              # TLS cert reads — very noisy
     "/etc/ca-certificates/",  # same as above

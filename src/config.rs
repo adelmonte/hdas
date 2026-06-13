@@ -55,7 +55,7 @@ pub struct Config {
     #[serde(default = "default_ignored_packages")]
     pub ignored_packages: Vec<String>,
 
-    #[serde(default)]
+    #[serde(default = "default_excluded_paths")]
     pub excluded_paths: Vec<String>,
 
     #[serde(default = "default_tracking_depth")]
@@ -112,6 +112,26 @@ fn default_ignored_packages() -> Vec<String> {
     vec![]
 }
 
+/// Shared infrastructure dirs written by many unrelated programs, so no single
+/// package legitimately "owns" them. Excluded by default so they are never
+/// attributed (or offered for deletion). Built from the real home at runtime
+/// because excluded_paths are matched as absolute prefixes.
+fn default_excluded_paths() -> Vec<String> {
+    let home = crate::db::get_user_home();
+    [
+        ".config/kdedefaults",
+        ".config/dconf",
+        ".config/pulse",
+        ".cache/fontconfig",
+        ".cache/mesa_shader_cache",
+        ".cache/mesa_shader_cache_db",
+        ".cache/thumbnails",
+    ]
+    .iter()
+    .map(|p| home.join(p).to_string_lossy().into_owned())
+    .collect()
+}
+
 fn default_tracking_depth() -> u32 {
     1
 }
@@ -126,7 +146,7 @@ impl Default for Config {
             monitored_dirs: default_monitored_dirs(),
             ignored_processes: default_ignored_processes(),
             ignored_packages: default_ignored_packages(),
-            excluded_paths: vec![],
+            excluded_paths: default_excluded_paths(),
             tracking_depth: default_tracking_depth(),
             auto_prune: default_auto_prune(),
         }
@@ -215,7 +235,13 @@ fn chown_to_user(path: &std::path::Path, uid: Option<u32>, gid: Option<u32>) {
 }
 
 pub fn default_config_content() -> String {
-    r#"# HDAS Configuration File
+    let mut excluded_block = String::from("excluded_paths = [\n");
+    for p in default_excluded_paths() {
+        excluded_block.push_str(&format!("    \"{}\",\n", p));
+    }
+    excluded_block.push(']');
+
+    let template = r#"# HDAS Configuration File
 
 # NOTE: In TOML, top-level keys must appear BEFORE any [[array]] sections.
 # Place all settings above the [[monitored_dirs]] entries.
@@ -230,12 +256,12 @@ ignored_processes = [
 # Packages to skip entirely (noisy apps like browsers)
 ignored_packages = []
 
-# Paths to exclude from monitoring even if under a monitored_dir
-# excluded_paths = [
+# Paths to exclude from monitoring even if under a monitored_dir.
+# Defaults below are shared infrastructure dirs (no single owner) - edit freely.
+# Other examples:
 #     "/etc/ssl/",
 #     "/etc/pacman.d/gnupg/",
-# ]
-excluded_paths = []
+__EXCLUDED_PATHS__
 
 # Default depth for monitored dirs without explicit depth (1 = app dir like ~/.cache/mozilla)
 # Note: ~/.local/share, ~/.local/state, and ~/.local/lib automatically add +1 depth
@@ -265,6 +291,6 @@ path = ".config"
 # [[monitored_dirs]]
 # path = "/etc/"
 # depth = 0
-"#
-    .to_string()
+"#;
+    template.replace("__EXCLUDED_PATHS__", &excluded_block)
 }
